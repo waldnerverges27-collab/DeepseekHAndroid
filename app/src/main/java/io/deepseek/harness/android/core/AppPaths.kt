@@ -65,6 +65,12 @@ object AppPaths {
     /** Directorio privado para archivos temporales internos de PRoot (`PROOT_TMP_DIR`). */
     fun prootTmpDir(context: Context): File = File(context.filesDir, "proot-tmp").apply { mkdirs() }
 
+    /** Directorio privado para metadatos de enlaces duros emulados (`PROOT_L2S_DIR`). */
+    fun prootL2sDir(context: Context): File = File(context.filesDir, "proot-l2s").apply { mkdirs() }
+
+    /** Directorio con sustitutos estáticos de `/proc/*` cuando Android SELinux restringe su lectura. */
+    fun hostSysdataDir(context: Context): File = File(context.filesDir, "container-sysdata").apply { mkdirs() }
+
     /**
      * Directorio auxiliar con enlaces simbólicos de librerías nativas de PRoot
      * (por ejemplo `libtalloc.so.2 -> <nativeLibraryDir>/libtalloc.so`).

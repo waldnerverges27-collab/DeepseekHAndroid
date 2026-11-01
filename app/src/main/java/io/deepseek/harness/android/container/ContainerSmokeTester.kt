@@ -4,6 +4,7 @@ import android.content.Context
 import io.deepseek.harness.android.core.AppLogger
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 /**
  * Resultado de la prueba rápida de humo del contenedor PRoot antes de iniciar `dsh web`.
@@ -22,7 +23,7 @@ data class SmokeTestResult(
  */
 object ContainerSmokeTester {
 
-    fun run(context: Context, timeoutSeconds: Long = 20L): SmokeTestResult {
+    fun run(context: Context, timeoutSeconds: Long = 45L): SmokeTestResult {
         val initialConfig = try {
             ProotEnvironment.prepare(context)
         } catch (e: Exception) {
@@ -81,12 +82,34 @@ object ContainerSmokeTester {
                 redirectErrorStream(true)
             }
             val proc = pb.start()
+            proc.outputStream.close()
+
+            val outputBuilder = StringBuilder()
+            val readerThread = thread(name = "proot-smoke-reader", isDaemon = true) {
+                try {
+                    proc.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                        val buf = CharArray(2048)
+                        var n = reader.read(buf)
+                        while (n >= 0) {
+                            synchronized(outputBuilder) {
+                                outputBuilder.append(buf, 0, n)
+                            }
+                            n = reader.read(buf)
+                        }
+                    }
+                } catch (_: Exception) {
+                }
+            }
+
             val finished = proc.waitFor(timeoutSeconds, TimeUnit.SECONDS)
             if (!finished) {
                 proc.destroyForcibly()
-                return false to "Tiempo de espera agotado (${timeoutSeconds}s) verificando PRoot"
+                readerThread.join(1000)
+                val partial = synchronized(outputBuilder) { outputBuilder.toString().trim() }
+                return false to "Tiempo de espera agotado (${timeoutSeconds}s) verificando PRoot. Salida parcial: $partial"
             }
-            val stdout = proc.inputStream.bufferedReader().use { it.readText().trim() }
+            readerThread.join(2000)
+            val stdout = synchronized(outputBuilder) { outputBuilder.toString().trim() }
             val ok = proc.exitValue() == 0 && stdout.contains("PROOT_SMOKE_OK")
             ok to stdout
         } catch (e: IOException) {

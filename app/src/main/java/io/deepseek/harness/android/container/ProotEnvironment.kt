@@ -21,11 +21,13 @@ data class ProotConfig(
     val prootLoader32: File?,
     val ldLibraryPath: String,
     val prootTmpDir: File,
+    val prootL2sDir: File,
     val rootfsDir: File,
     val sharedTmpDir: File,
     val sharedShmDir: File,
     val resolvConfFile: File,
     val hostsFile: File,
+    val fakeProcBinds: List<String>,
     val workspaceHostDir: File,
     val safMountsHostDir: File,
     val externalStorageRoot: File?,
@@ -80,6 +82,7 @@ object ProotEnvironment {
 
         val resolvConf = writeResolvConf(context)
         val hostsFile = writeHostsFile(context)
+        val fakeProcBinds = prepareFakeProcBinds(context)
         installGuestIntegrationFiles(context, rootfsDir)
 
         val nodePath = AppPaths.resolveGuestNodePath(rootfsDir)
@@ -95,11 +98,13 @@ object ProotEnvironment {
             prootLoader32 = loader32Bin,
             ldLibraryPath = ldPathParts.joinToString(":"),
             prootTmpDir = AppPaths.prootTmpDir(context),
+            prootL2sDir = AppPaths.prootL2sDir(context),
             rootfsDir = rootfsDir,
             sharedTmpDir = AppPaths.sharedContainerTmpDir(context),
             sharedShmDir = AppPaths.sharedContainerShmDir(context),
             resolvConfFile = resolvConf,
             hostsFile = hostsFile,
+            fakeProcBinds = fakeProcBinds,
             workspaceHostDir = AppPaths.workspaceHostDir(context),
             safMountsHostDir = AppPaths.safMountsHostDir(context),
             externalStorageRoot = extRoot,
@@ -251,6 +256,60 @@ object ProotEnvironment {
             )
         }
         return file
+    }
+
+    /**
+     * En Android 10–15+, SELinux restringe la lectura directa de `/proc/stat`, `/proc/loadavg`,
+     * `/proc/uptime` y `/proc/version` para aplicaciones sin privilegios. Generamos archivos
+     * sustitutos limpios (igual que `proot-distro`) únicamente para las entradas bloqueadas.
+     */
+    private fun prepareFakeProcBinds(context: Context): List<String> {
+        val sysDir = AppPaths.hostSysdataDir(context)
+        val cpuCount = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+        val binds = ArrayList<String>(5)
+
+        fun bindIfUnreadable(procPath: String, fileName: String, content: () -> String) {
+            val hostProc = File(procPath)
+            val readable = try {
+                hostProc.isFile && hostProc.canRead() && hostProc.inputStream().use { it.read() >= 0 }
+            } catch (_: Exception) {
+                false
+            }
+            if (!readable) {
+                val fakeFile = File(sysDir, fileName)
+                if (!fakeFile.isFile || fakeFile.length() == 0L) {
+                    fakeFile.writeText(content())
+                }
+                binds.add("${fakeFile.absolutePath}:$procPath")
+            }
+        }
+
+        bindIfUnreadable("/proc/loadavg", "loadavg") { "0.12 0.08 0.05 1/256 1024\n" }
+        bindIfUnreadable("/proc/uptime", "uptime") { "3600.00 ${(3500 * cpuCount)}.00\n" }
+        bindIfUnreadable("/proc/version", "version") {
+            "Linux version 6.6.30-android15 (builder@android) (clang version 18.0.1) #1 SMP PREEMPT\n"
+        }
+        bindIfUnreadable("/proc/stat", "stat") {
+            buildString {
+                val totalUser = 300 * cpuCount
+                val totalSys = 180 * cpuCount
+                val totalIdle = 12000 * cpuCount
+                appendLine("cpu  $totalUser 0 $totalSys $totalIdle 20 5 2 0 0 0")
+                for (i in 0 until cpuCount) {
+                    appendLine("cpu$i 300 0 180 12000 20 5 2 0 0 0")
+                }
+                appendLine("ctxt 140223")
+                appendLine("btime 1730000000")
+                appendLine("processes 512")
+                appendLine("procs_running 1")
+                appendLine("procs_blocked 0")
+            }
+        }
+        bindIfUnreadable("/proc/vmstat", "vmstat") {
+            "nr_free_pages 262144\nnr_active_anon 65536\nnr_inactive_anon 32768\n"
+        }
+
+        return binds
     }
 
     /**

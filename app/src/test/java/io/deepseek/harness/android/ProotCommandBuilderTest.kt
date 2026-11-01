@@ -3,6 +3,7 @@ package io.deepseek.harness.android
 import io.deepseek.harness.android.container.ProotCommandBuilder
 import io.deepseek.harness.android.container.ProotConfig
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -22,11 +23,13 @@ class ProotCommandBuilderTest {
             prootLoader32 = null,
             ldLibraryPath = "${base.absolutePath}/proot-libs:${base.absolutePath}/lib",
             prootTmpDir = File(base, "proot-tmp"),
+            prootL2sDir = File(base, "proot-l2s"),
             rootfsDir = File(base, "rootfs"),
             sharedTmpDir = File(base, "container-tmp"),
             sharedShmDir = File(base, "container-shm"),
             resolvConfFile = File(base, "etc/resolv.conf"),
             hostsFile = File(base, "etc/hosts"),
+            fakeProcBinds = listOf("${base.absolutePath}/sysdata/loadavg:/proc/loadavg"),
             workspaceHostDir = File(base, "workspace"),
             safMountsHostDir = File(base, "saf-mounts"),
             externalStorageRoot = File("/storage/emulated/0"),
@@ -42,9 +45,21 @@ class ProotCommandBuilderTest {
         val cfg = sampleConfig()
         val engineSpec = ProotCommandBuilder.buildEngineSpec(cfg, port = 3080, pickToken = "tok-123")
         val bashSpec = ProotCommandBuilder.buildInteractiveBashSpec(cfg, port = 3080)
+        val smokeSpec = ProotCommandBuilder.buildSmokeTestSpec(cfg)
 
         assertEquals(engineSpec.workingDirectoryHost, bashSpec.workingDirectoryHost)
         assertEquals(engineSpec.hostEnvironment, bashSpec.hostEnvironment)
+
+        // PRoot NO admite "--" como separador de opciones (causaría: proot error: unknown option '--')
+        assertFalse(engineSpec.command.contains("--"))
+        assertFalse(bashSpec.command.contains("--"))
+        assertFalse(smokeSpec.command.contains("--"))
+
+        // Verificar que inmediatamente después de "-w <dir>" comienza "/usr/bin/env -i"
+        val wIndex = engineSpec.command.indexOf("-w")
+        assertTrue(wIndex > 0)
+        assertEquals("/usr/bin/env", engineSpec.command[wIndex + 2])
+        assertEquals("-i", engineSpec.command[wIndex + 3])
 
         // Ambos usan el mismo binario proot como argv[0]
         assertEquals(cfg.prootExecutable.absolutePath, engineSpec.executablePath)

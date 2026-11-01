@@ -1,6 +1,9 @@
 package io.deepseek.harness.android.container
 
 import io.deepseek.harness.android.core.AppPaths
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Paths
 
 /**
  * Especificación completa para lanzar un proceso dentro del contenedor PRoot compartido.
@@ -35,9 +38,15 @@ data class ProotLaunchSpec(
  * Tanto [buildEngineSpec] (que arranca el servidor web de `deepseek-harness`) como
  * [buildInteractiveBashSpec] (que abre la shell `bash` del usuario en el panel PTY)
  * invocan exactamente la misma función base [buildContainerSpec]. Por ello:
- * - Ven la misma raíz `<filesDir>/rootfs` y los mismos binarios glibc (`node`, `npm`, `python3`, `git`, `apt`).
+ * - Ven la misma raíz `<filesDir>/rootfs` y los mismos binarios glibc (`node`, `npm`, `pnpm`, `python3`, `git`, `apt`).
  * - Comparten `/tmp`, `/dev/shm`, `/root/workspace`, `/root/.dsh` y `/mnt/saf` en tiempo real.
  * - Comparten el mismo `UID/GID` emulado (`0:0`), `PATH`, `DSH_HOME` y `NODE_OPTIONS`.
+ *
+ * NOTA IMPORTANTE SOBRE EL PARSER CLI DE PROOT (`termux/proot/src/cli/cli.c`):
+ * `parse_config()` detiene el análisis de opciones de PRoot en el primer argumento que NO
+ * comienza por `'-'` (`if (arg[0] != '-') break;`). PRoot NO admite `--` como separador de
+ * fin de opciones (`unknown option '--'`), por lo que `/usr/bin/env` debe ir directamente
+ * tras `-w <guestWorkingDir>`.
  */
 object ProotCommandBuilder {
 
@@ -132,7 +141,7 @@ object ProotCommandBuilder {
         val hostEnv = buildHostEnvironment(config)
         val guestEnv = buildSharedGuestEnvironment(config, extraGuestEnv)
 
-        val cmd = ArrayList<String>(48)
+        val cmd = ArrayList<String>(56)
         if (config.useLinker64Wrapper) {
             cmd.add(LINKER64_PATH)
         }
@@ -140,7 +149,10 @@ object ProotCommandBuilder {
         cmd.add("--kill-on-exit")
         cmd.add("-0")
         cmd.add("--link2symlink")
+        cmd.add("--sysvipc")
+        cmd.add("--ashmem-memfd")
         cmd.add("-L")
+        cmd.add("-H")
         cmd.add("-r")
         cmd.add(config.rootfsDir.absolutePath)
 
@@ -153,10 +165,9 @@ object ProotCommandBuilder {
 
         cmd.add("-w")
         cmd.add(guestWorkingDir)
-        cmd.add("--")
 
-        // Limpiar variables bionic de Android (LD_LIBRARY_PATH, BOOTCLASSPATH, etc.)
-        // antes de ejecutar binarios glibc de Debian/Ubuntu dentro del contenedor.
+        // IMPORTANTE: No añadir "--" aquí; PRoot finaliza sus opciones automáticamente al
+        // encontrar "/usr/bin/env" (no empieza por '-') y pasa "-i ..." íntegro a /usr/bin/env.
         cmd.add("/usr/bin/env")
         cmd.add("-i")
         guestEnv.forEach { (key, value) ->
@@ -173,7 +184,10 @@ object ProotCommandBuilder {
 
     internal fun buildHostEnvironment(config: ProotConfig): Map<String, String> = buildMap {
         put("PROOT_TMP_DIR", config.prootTmpDir.absolutePath)
+        put("PROOT_L2S_DIR", config.prootL2sDir.absolutePath)
         put("LD_LIBRARY_PATH", config.ldLibraryPath)
+        put("HOME", config.rootfsDir.absolutePath)
+        put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/system/bin")
         config.prootLoader?.let { put("PROOT_LOADER", it.absolutePath) }
         config.prootLoader32?.let { put("PROOT_LOADER_32", it.absolutePath) }
         if (config.disableSeccomp) {
@@ -185,11 +199,20 @@ object ProotCommandBuilder {
         add("/dev:/dev")
         add("/dev/urandom:/dev/random")
         add("/proc:/proc")
-        add("/proc/self/fd:/dev/fd")
-        add("/proc/self/fd/0:/dev/stdin")
-        add("/proc/self/fd/1:/dev/stdout")
-        add("/proc/self/fd/2:/dev/stderr")
+        if (!pathEntryExists("/dev/fd")) {
+            add("/proc/self/fd:/dev/fd")
+        }
+        if (!pathEntryExists("/dev/stdin") && pathEntryExists("/proc/self/fd/0")) {
+            add("/proc/self/fd/0:/dev/stdin")
+        }
+        if (!pathEntryExists("/dev/stdout") && pathEntryExists("/proc/self/fd/1")) {
+            add("/proc/self/fd/1:/dev/stdout")
+        }
+        if (!pathEntryExists("/dev/stderr") && pathEntryExists("/proc/self/fd/2")) {
+            add("/proc/self/fd/2:/dev/stderr")
+        }
         add("/sys:/sys")
+        addAll(config.fakeProcBinds)
         add("${config.sharedShmDir.absolutePath}:/dev/shm")
         add("${config.sharedTmpDir.absolutePath}:/tmp")
         add("${config.resolvConfFile.absolutePath}:/etc/resolv.conf")
@@ -206,6 +229,13 @@ object ProotCommandBuilder {
             add("$path:/mnt/sdcard")
         }
     }
+
+    private fun pathEntryExists(path: String): Boolean =
+        try {
+            Files.exists(Paths.get(path), LinkOption.NOFOLLOW_LINKS)
+        } catch (_: Exception) {
+            false
+        }
 
     internal fun buildSharedGuestEnvironment(
         config: ProotConfig,
