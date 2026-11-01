@@ -50,7 +50,7 @@ jobs:
           fi
           echo "force=${FORCE_REBUILD} rootfs_changed=${ROOTFS_CHANGED}"
           if [ "${FORCE_REBUILD}" != "true" ] && [ "${ROOTFS_CHANGED}" = "false" ]; then
-            if gh release download v1.0.0-autonomous \
+            if gh release download \
                  --pattern 'rootfs.tar.xz' \
                  --pattern 'rootfs.tar.xz.sha256' \
                  --pattern 'rootfs.version' \
@@ -166,9 +166,11 @@ jobs:
             echo "::error title=GradleBuildError::${TAIL_MSG}"
             exit 1
           fi
+          VERSION_NAME="$(sed -n 's/.*versionName.*?: "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)"
+          VERSION_CODE="$(sed -n 's/.*versionCode.*?: \([0-9]*\).*/\1/p' app/build.gradle.kts | head -n 1)"
           mkdir -p dist-release
-          cp app/build/outputs/apk/release/app-release.apk dist-release/DeepSeekHarness-Android-arm64-release.apk
-          cp app/build/outputs/apk/debug/app-debug.apk dist-release/DeepSeekHarness-Android-arm64-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk "dist-release/DeepSeekHarness-Android-v${VERSION_NAME}-arm64-release.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "dist-release/DeepSeekHarness-Android-v${VERSION_NAME}-arm64-debug.apk"
           cp app/src/main/assets/rootfs.tar.xz dist-release/rootfs.tar.xz
           cp app/src/main/assets/rootfs.tar.xz.sha256 dist-release/rootfs.tar.xz.sha256
           cp app/src/main/assets/rootfs.version dist-release/rootfs.version
@@ -186,12 +188,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          VERSION_NAME="$(sed -n 's/.*versionName.*?: "\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)"
+          VERSION_CODE="$(sed -n 's/.*versionCode.*?: \([0-9]*\).*/\1/p' app/build.gradle.kts | head -n 1)"
           ROOTFS_STAMP="$(cat dist-release/rootfs.version)"
-          TAG="v1.0.0-autonomous"
+          TAG="v${VERSION_NAME}-autonomous"
           {
-            echo "## DeepSeek Harness para Android — APK Autónomo Compilado"
+            echo "## DeepSeek Harness para Android v${VERSION_NAME} (build ${VERSION_CODE}) — APK Autónomo Compilado"
             echo ""
-            echo "- **Rama compilada**: \`${GITHUB_REF_NAME}\` (\`${GITHUB_SHA::7}\`)"
+            echo "- **Versión APK**: \`${VERSION_NAME}\` (\`versionCode = ${VERSION_CODE}\`)"
+            echo "- **Rama y commit compilado**: \`${GITHUB_REF_NAME}\` (\`${GITHUB_SHA::7}\`)"
             echo "- **Sello del contenedor embebido**: \`${ROOTFS_STAMP}\`"
             echo "- **Entorno embebido (100% offline tras el primer arranque, sin root ni Termux)**:"
             echo "  - Debian 13 (Trixie, \`glibc 2.41\`) \`arm64\`"
@@ -200,17 +205,15 @@ jobs:
             echo "  - **PRoot** + \`libtalloc\` + \`libandroid-shmem\` + **Terminal PTY nativa (\`libtermux.so\`)**"
             echo ""
             echo "### Descarga directa para instalar en tu Android"
-            echo "- **\`DeepSeekHarness-Android-arm64-release.apk\`** *(Recomendado)*: APK firmado listo para instalar directamente en Android 8.0–15+ (\`arm64-v8a\`)."
-            echo "- **\`DeepSeekHarness-Android-arm64-debug.apk\`**: variante de depuración firmada."
+            echo "- **\`DeepSeekHarness-Android-v${VERSION_NAME}-arm64-release.apk\`** *(Recomendado)*: APK firmado listo para instalar directamente en Android 8.0–15+ (\`arm64-v8a\`)."
+            echo "- **\`DeepSeekHarness-Android-v${VERSION_NAME}-arm64-debug.apk\`**: variante de depuración firmada."
           } > /tmp/release-notes.md
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist-release/* --clobber
-            gh release edit "$TAG" --title "DeepSeek Harness Android — APK Autónomo (Node.js Latest)" --notes-file /tmp/release-notes.md --latest
-          else
-            gh release create "$TAG" dist-release/* \
-              --target "$GITHUB_SHA" \
-              --title "DeepSeek Harness Android — APK Autónomo (Node.js Latest)" \
-              --notes-file /tmp/release-notes.md \
-              --latest
+            gh release delete "$TAG" --cleanup-tag --yes
           fi
+          gh release create "$TAG" dist-release/* \
+            --target "$GITHUB_SHA" \
+            --title "DeepSeek Harness Android v${VERSION_NAME} — APK Autónomo (Node.js Latest)" \
+            --notes-file /tmp/release-notes.md \
+            --latest
