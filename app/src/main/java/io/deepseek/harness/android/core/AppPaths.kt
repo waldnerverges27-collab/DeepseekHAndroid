@@ -68,7 +68,7 @@ object AppPaths {
     /** Directorio privado para metadatos de enlaces duros emulados (`PROOT_L2S_DIR`). */
     fun prootL2sDir(context: Context): File = File(context.filesDir, "proot-l2s").apply { mkdirs() }
 
-    /** Directorio con sustitutos estáticos de `/proc/*` cuando Android SELinux restringe su lectura. */
+    /** Directorio con sustitutos estáticos de `/proc/` cuando Android SELinux restringe su lectura. */
     fun hostSysdataDir(context: Context): File = File(context.filesDir, "container-sysdata").apply { mkdirs() }
 
     /**
