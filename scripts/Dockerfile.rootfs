@@ -5,7 +5,8 @@
 # Constructor reproducible multi-plataforma (`--platform linux/arm64`) del rootfs
 # Debian 13 Trixie (glibc 2.41 moderna) + Node.js MÁS ACTUAL (`NODE_VERSION=latest`,
 # resolviendo dinámicamente el último lanzamiento estable en nodejs.org, p.ej. v26.x+)
-# + npm / npx / corepack (pnpm + yarn) + cabeceras C/C++ de Node + `@deepseek-ai/dsh`.
+# + npm / npx / corepack (pnpm + yarn) + cabeceras C/C++ de Node + `@deepseek-ai/dsh`
+# + Zsh + Oh My Zsh + zsh-autosuggestions + zsh-syntax-highlighting + zsh-completions.
 # ==============================================================================
 ARG BUILDPLATFORM=linux/amd64
 ARG DEBIAN_SUITE=trixie
@@ -24,6 +25,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 COPY app/src/main/assets/container/dsh-android-preload.cjs /etc/dsh-android-preload.cjs
 COPY app/src/main/assets/container/profile-dsh.sh /etc/profile.d/dsh-android.sh
+COPY app/src/main/assets/container/zshrc-dsh.zsh /etc/zsh/dsh-zshrc.zsh
 COPY app/src/main/assets/container/verify-shared-env.sh /usr/local/bin/dsh-doctor
 COPY app/src/main/assets/container/update-node.sh /usr/local/bin/dsh-update-node
 
@@ -32,6 +34,7 @@ COPY app/src/main/assets/container/update-node.sh /usr/local/bin/dsh-update-node
 RUN chmod 0755 /usr/local/bin/dsh-doctor /usr/local/bin/dsh-update-node \
     && apt-get update && apt-get install -y --no-install-recommends \
       bash \
+      bash-completion \
       build-essential \
       ca-certificates \
       curl \
@@ -50,6 +53,15 @@ RUN chmod 0755 /usr/local/bin/dsh-doctor /usr/local/bin/dsh-update-node \
       tar \
       unzip \
       xz-utils \
+      zsh \
+    && git clone --depth 1 https://github.com/ohmyzsh/ohmyzsh.git /root/.oh-my-zsh \
+    && git clone --depth 1 https://github.com/zsh-users/zsh-autosuggestions.git /root/.oh-my-zsh/custom/plugins/zsh-autosuggestions \
+    && git clone --depth 1 https://github.com/zsh-users/zsh-syntax-highlighting.git /root/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting \
+    && git clone --depth 1 https://github.com/zsh-users/zsh-completions.git /root/.oh-my-zsh/custom/plugins/zsh-completions \
+    && find /root/.oh-my-zsh -name ".git" -type d -prune -exec rm -rf {} + \
+    && printf '# dsh-android-ohmyzsh\n[ -f /etc/zsh/dsh-zshrc.zsh ] && source /etc/zsh/dsh-zshrc.zsh\n' > /root/.zshrc \
+    && sed -i 's|^root:\(.*\):/bin/bash$|root:\1:/bin/zsh|' /etc/passwd \
+    && HOME=/root ZSH_DISABLE_COMPFIX=true /bin/zsh -c 'source /root/.zshrc >/dev/null 2>&1 || true' \
     && /usr/local/bin/dsh-update-node "${NODE_VERSION}" \
     && NODE_OPTIONS="--jitless" npm install -g pnpm corepack \
     && mkdir -p /opt/dsh \
@@ -70,7 +82,7 @@ RUN chmod 0755 /usr/local/bin/dsh-doctor /usr/local/bin/dsh-update-node \
     && apt-get clean \
     && rm -rf /usr/share/doc /usr/share/man /usr/share/info /usr/share/locale \
               /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/* \
-    && mkdir -p /root/workspace /mnt/saf \
+    && mkdir -p /root/workspace /mnt/saf /.l2s \
     && ln -sfn /mnt/saf /root/saf
 
 # Etapa empaquetadora ejecutada en la arquitectura nativa del host ($BUILDPLATFORM)
@@ -81,7 +93,7 @@ WORKDIR /export
 COPY --from=rootfs-stage / /stage-rootfs/
 RUN cp /stage-rootfs/etc/dsh-bundled-node-version /export/node.version \
     && rm -rf /stage-rootfs/dev /stage-rootfs/proc /stage-rootfs/sys /stage-rootfs/.dockerenv \
-    && mkdir -p /stage-rootfs/dev /stage-rootfs/proc /stage-rootfs/sys /stage-rootfs/tmp \
+    && mkdir -p /stage-rootfs/dev /stage-rootfs/proc /stage-rootfs/sys /stage-rootfs/tmp /stage-rootfs/.l2s \
     && XZ_OPT="-T0 -6" tar -cJf /export/rootfs.tar.xz -C /stage-rootfs . \
     && sha256sum /export/rootfs.tar.xz > /export/rootfs.tar.xz.sha256
 

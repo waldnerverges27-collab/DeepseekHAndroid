@@ -14,6 +14,7 @@ object AppPaths {
     const val ASSET_ROOTFS_VERSION = "rootfs.version"
     const val ASSET_CONTAINER_PRELOAD = "container/dsh-android-preload.cjs"
     const val ASSET_CONTAINER_PROFILE = "container/profile-dsh.sh"
+    const val ASSET_CONTAINER_ZSHRC = "container/zshrc-dsh.zsh"
     const val ASSET_CONTAINER_DOCTOR = "container/verify-shared-env.sh"
     const val ASSET_CONTAINER_UPDATE_NODE = "container/update-node.sh"
     const val ASSET_WEB_POLYFILLS = "web/compat-polyfills.js"
@@ -32,6 +33,14 @@ object AppPaths {
     const val GUEST_PROFILE_SH = "/etc/profile.d/dsh-android.sh"
     const val GUEST_DOCTOR_BIN = "/usr/local/bin/dsh-doctor"
     const val GUEST_UPDATE_NODE_BIN = "/usr/local/bin/dsh-update-node"
+
+    /** Shells interactivas candidatas (prioriza Zsh + Oh My Zsh, con respaldo a Bash). */
+    val CANDIDATE_INTERACTIVE_SHELLS = listOf(
+        "bin/zsh",
+        "usr/bin/zsh",
+        "bin/bash",
+        "usr/bin/bash",
+    )
 
     /** Ubicaciones candidatas de Node.js (relativas a la raíz del rootfs). */
     val CANDIDATE_NODE_BINS = listOf(
@@ -65,8 +74,15 @@ object AppPaths {
     /** Directorio privado para archivos temporales internos de PRoot (`PROOT_TMP_DIR`). */
     fun prootTmpDir(context: Context): File = File(context.filesDir, "proot-tmp").apply { mkdirs() }
 
-    /** Directorio privado para metadatos de enlaces duros emulados (`PROOT_L2S_DIR`). */
-    fun prootL2sDir(context: Context): File = File(context.filesDir, "proot-l2s").apply { mkdirs() }
+    /**
+     * Directorio para archivos de respaldo de enlaces duros emulados (`PROOT_L2S_DIR`).
+     * DEBE situarse DENTRO de `<filesDir>/rootfs/.l2s` (igual que en `proot-distro`) para que
+     * PRoot resuelva los enlaces simbólicos creados por `fs.link()` dentro del árbol `-r <rootfs>`.
+     */
+    fun prootL2sDir(context: Context): File = File(rootfsDir(context), ".l2s").apply { mkdirs() }
+
+    /** Ubicación heredada de `PROOT_L2S_DIR` en versiones previas para migración automática. */
+    fun legacyProotL2sDir(context: Context): File = File(context.filesDir, "proot-l2s")
 
     /** Directorio con sustitutos estáticos de `/proc/` cuando Android SELinux restringe su lectura. */
     fun hostSysdataDir(context: Context): File = File(context.filesDir, "container-sysdata").apply { mkdirs() }
@@ -125,5 +141,14 @@ object AppPaths {
             f.isFile || java.nio.file.Files.isSymbolicLink(f.toPath())
         }
         return match?.let { "/$it" }
+    }
+
+    /** Resuelve la shell interactiva del usuario dentro del contenedor (`/bin/zsh` o `/bin/bash`). */
+    fun resolveGuestInteractiveShell(rootfs: File): String {
+        val match = CANDIDATE_INTERACTIVE_SHELLS.firstOrNull { rel ->
+            val f = File(rootfs, rel)
+            f.isFile || java.nio.file.Files.isSymbolicLink(f.toPath())
+        }
+        return match?.let { "/$it" } ?: "/bin/bash"
     }
 }

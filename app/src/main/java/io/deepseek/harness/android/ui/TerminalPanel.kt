@@ -240,12 +240,12 @@ fun TerminalPanel(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
-                        text = "No hay ninguna sesión bash abierta.",
+                        text = "No hay ninguna sesión de terminal abierta.",
                         color = Color(0xFF9CA3AF),
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     TextButton(onClick = onCreateSession) {
-                        Text("Iniciar bash en contenedor PRoot")
+                        Text("Iniciar Zsh (Oh My Zsh) en contenedor PRoot")
                     }
                 }
             } else {

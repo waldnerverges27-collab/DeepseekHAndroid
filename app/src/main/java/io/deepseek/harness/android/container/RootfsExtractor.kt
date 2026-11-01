@@ -102,13 +102,22 @@ object RootfsExtractor {
             val stagingDir = AppPaths.rootfsStagingDir(context)
             val lockFile = AppPaths.rootfsExtractingLock(context)
             val dshBackupDir = File(context.filesDir, "dsh-home-backup")
+            val l2sBackupDir = File(context.filesDir, "dsh-l2s-backup")
             val bundledVersion = readBundledVersion(context)
 
             AppLogger.info("Rootfs", "Iniciando extracción de ${AppPaths.ASSET_ROOTFS_ARCHIVE} (versión=$bundledVersion)")
             lockFile.parentFile?.mkdirs()
             lockFile.writeText(System.currentTimeMillis().toString())
 
-            // Respaldar /root/.dsh si existía una instalación previa (conserva API keys y sesiones)
+            // Migrar primero cualquier proot-l2s heredado hacia rootfs/.l2s antes del respaldo
+            if (rootfsDir.isDirectory) {
+                try {
+                    ProotEnvironment.migrateLegacyProotL2sIfNeeded(context, rootfsDir)
+                } catch (_: Exception) {
+                }
+            }
+
+            // Respaldar /root/.dsh y /.l2s si existía una instalación previa (conserva API keys y sesiones)
             val existingDshHome = File(rootfsDir, "root/.dsh")
             if (existingDshHome.isDirectory) {
                 try {
@@ -118,6 +127,16 @@ object RootfsExtractor {
                     AppLogger.info("Rootfs", "Respaldado /root/.dsh previo antes de actualizar rootfs")
                 } catch (e: Exception) {
                     AppLogger.warn("Rootfs", "No se pudo respaldar /root/.dsh previo", e)
+                }
+            }
+            val existingL2sDir = File(rootfsDir, ".l2s")
+            if (existingL2sDir.isDirectory) {
+                try {
+                    restoreWritableRecursive(l2sBackupDir)
+                    l2sBackupDir.deleteRecursively()
+                    copyDirectoryPreservingPermissions(existingL2sDir, l2sBackupDir)
+                } catch (e: Exception) {
+                    AppLogger.warn("Rootfs", "No se pudo respaldar /.l2s previo", e)
                 }
             }
 
@@ -140,7 +159,16 @@ object RootfsExtractor {
                 )
             }
 
-            // Restaurar /root/.dsh respaldado si procede
+            // Restaurar /.l2s y /root/.dsh respaldados si procede
+            if (l2sBackupDir.isDirectory) {
+                try {
+                    val targetL2s = File(stagingDir, ".l2s")
+                    copyDirectoryPreservingPermissions(l2sBackupDir, targetL2s)
+                    l2sBackupDir.deleteRecursively()
+                } catch (e: Exception) {
+                    AppLogger.warn("Rootfs", "Error restaurando respaldo de /.l2s", e)
+                }
+            }
             if (dshBackupDir.isDirectory) {
                 try {
                     val targetDshHome = File(stagingDir, "root/.dsh")
@@ -152,7 +180,7 @@ object RootfsExtractor {
             }
 
             // Asegurar directorios base de montaje para proot
-            listOf("dev", "proc", "sys", "tmp", "etc", "root/workspace", "mnt/saf").forEach { rel ->
+            listOf("dev", "proc", "sys", "tmp", "etc", ".l2s", "root/workspace", "mnt/saf").forEach { rel ->
                 File(stagingDir, rel).mkdirs()
             }
 
@@ -353,7 +381,6 @@ object RootfsExtractor {
     }
 
     private fun copyDirectoryPreservingPermissions(src: File, dst: File) {
-        if (!src.exists()) return
         val srcPath = src.toPath()
         if (Files.isSymbolicLink(srcPath)) {
             dst.parentFile?.mkdirs()
@@ -361,6 +388,7 @@ object RootfsExtractor {
             Files.createSymbolicLink(dst.toPath(), Files.readSymbolicLink(srcPath))
             return
         }
+        if (!src.exists()) return
         if (src.isDirectory) {
             dst.mkdirs()
             src.listFiles()?.forEach { child ->

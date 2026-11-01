@@ -83,7 +83,8 @@ object TerminalSessionRegistry {
 
         val client = getOrCreateClient(appCtx, onFontSizeDelta)
         sessionCounter++
-        val label = "bash #$sessionCounter"
+        val shellName = config.guestInteractiveShell.substringAfterLast('/').ifEmpty { "zsh" }
+        val label = "$shellName #$sessionCounter"
 
         val session = TerminalSession(
             spec.executablePath,

@@ -33,6 +33,7 @@ data class ProotConfig(
     val externalStorageRoot: File?,
     val guestNodePath: String,
     val guestDshEntry: String,
+    val guestInteractiveShell: String = "/bin/zsh",
     val disableSeccomp: Boolean,
     val useLinker64Wrapper: Boolean = false,
 )
@@ -83,12 +84,14 @@ object ProotEnvironment {
         val resolvConf = writeResolvConf(context)
         val hostsFile = writeHostsFile(context)
         val fakeProcBinds = prepareFakeProcBinds(context)
+        migrateLegacyProotL2sIfNeeded(context, rootfsDir)
         installGuestIntegrationFiles(context, rootfsDir)
 
         val nodePath = AppPaths.resolveGuestNodePath(rootfsDir)
             ?: "/usr/local/bin/node"
         val dshEntry = AppPaths.resolveGuestDshEntry(rootfsDir)
             ?: "/opt/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
+        val interactiveShell = AppPaths.resolveGuestInteractiveShell(rootfsDir)
 
         val extRoot = resolveAccessibleExternalStorageRoot()
 
@@ -110,6 +113,7 @@ object ProotEnvironment {
             externalStorageRoot = extRoot,
             guestNodePath = nodePath,
             guestDshEntry = dshEntry,
+            guestInteractiveShell = interactiveShell,
             disableSeccomp = prefs.prootNoSeccomp,
             useLinker64Wrapper = forceLinker64Fallback,
         )
@@ -313,8 +317,76 @@ object ProotEnvironment {
     }
 
     /**
+     * Migra archivos de enlaces duros creados en la ruta antigua `<filesDir>/proot-l2s` hacia
+     * `<filesDir>/rootfs/.l2s` y repara enlaces simbólicos en `/root/.dsh` para evitar `ENOENT`.
+     */
+    internal fun migrateLegacyProotL2sIfNeeded(context: Context, rootfsDir: File) {
+        val legacyDir = AppPaths.legacyProotL2sDir(context)
+        val targetL2sDir = File(rootfsDir, ".l2s").apply { mkdirs() }
+        val legacyPrefix = legacyDir.absolutePath.trimEnd('/') + "/"
+        val newPrefix = targetL2sDir.absolutePath.trimEnd('/') + "/"
+
+        if (legacyDir.isDirectory) {
+            try {
+                legacyDir.listFiles()?.forEach { child ->
+                    val dst = File(targetL2sDir, child.name)
+                    val childPath = child.toPath()
+                    if (Files.isSymbolicLink(childPath)) {
+                        val rawTarget = Files.readSymbolicLink(childPath).toString()
+                        val rewritten = if (rawTarget.startsWith(legacyPrefix)) {
+                            newPrefix + rawTarget.removePrefix(legacyPrefix)
+                        } else {
+                            rawTarget
+                        }
+                        Files.deleteIfExists(dst.toPath())
+                        Files.createSymbolicLink(dst.toPath(), Paths.get(rewritten))
+                    } else if (child.isFile) {
+                        child.copyTo(dst, overwrite = true)
+                    }
+                }
+                legacyDir.deleteRecursively()
+            } catch (e: Exception) {
+                AppLogger.warn("ProotEnv", "Error migrando proot-l2s heredado", e)
+            }
+        }
+
+        val dshHome = File(rootfsDir, "root/.dsh")
+        if (dshHome.isDirectory) {
+            repairL2sSymlinksRecursive(dshHome, legacyPrefix, newPrefix)
+        }
+    }
+
+    private fun repairL2sSymlinksRecursive(entry: File, legacyPrefix: String, newPrefix: String) {
+        val path = entry.toPath()
+        try {
+            if (Files.isSymbolicLink(path)) {
+                val targetStr = Files.readSymbolicLink(path).toString()
+                if (targetStr.startsWith(legacyPrefix)) {
+                    val updatedTarget = newPrefix + targetStr.removePrefix(legacyPrefix)
+                    Files.deleteIfExists(path)
+                    if (File(updatedTarget).exists() || Files.isSymbolicLink(Paths.get(updatedTarget))) {
+                        Files.createSymbolicLink(path, Paths.get(updatedTarget))
+                    }
+                } else if ((targetStr.contains("/.l2s/") || targetStr.contains(".proot.l2s.")) &&
+                    !File(targetStr).exists()
+                ) {
+                    // Limpiar enlace colgante huérfano dejado por un intento fallido previo
+                    Files.deleteIfExists(path)
+                }
+                return
+            }
+            if (entry.isDirectory) {
+                entry.listFiles()?.forEach { child ->
+                    repairL2sSymlinksRecursive(child, legacyPrefix, newPrefix)
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
      * Instala dentro del rootfs los archivos auxiliares de integración para que el motor
-     * `dsh` y las sesiones interactivas `bash` tengan un comportamiento idéntico.
+     * `dsh` y las sesiones interactivas `zsh`/`bash` tengan un comportamiento idéntico.
      */
     private fun installGuestIntegrationFiles(context: Context, rootfsDir: File) {
         copyAssetIntoRootfs(
@@ -327,6 +399,12 @@ object ProotEnvironment {
             context = context,
             assetPath = AppPaths.ASSET_CONTAINER_PROFILE,
             destFile = File(rootfsDir, "etc/profile.d/dsh-android.sh"),
+            executable = false,
+        )
+        copyAssetIntoRootfs(
+            context = context,
+            assetPath = AppPaths.ASSET_CONTAINER_ZSHRC,
+            destFile = File(rootfsDir, "etc/zsh/dsh-zshrc.zsh"),
             executable = false,
         )
         copyAssetIntoRootfs(
@@ -349,6 +427,21 @@ object ProotEnvironment {
             if (!Files.isSymbolicLink(linkPath) && !homeSafLink.exists()) {
                 homeSafLink.parentFile?.mkdirs()
                 Files.createSymbolicLink(linkPath, Paths.get(AppPaths.GUEST_SAF_MOUNT_ROOT))
+            }
+        } catch (_: Exception) {
+        }
+
+        // Asegurar que /root/.zshrc cargue la configuración Oh My Zsh + colores + autocompletado
+        val zshrc = File(rootfsDir, "root/.zshrc")
+        try {
+            val marker = "# dsh-android-ohmyzsh"
+            val existing = if (zshrc.isFile) zshrc.readText() else ""
+            if (!existing.contains(marker)) {
+                zshrc.parentFile?.mkdirs()
+                if (zshrc.exists()) zshrc.setWritable(true, true)
+                zshrc.appendText(
+                    "\n$marker\n[ -f /etc/zsh/dsh-zshrc.zsh ] && source /etc/zsh/dsh-zshrc.zsh\n",
+                )
             }
         } catch (_: Exception) {
         }

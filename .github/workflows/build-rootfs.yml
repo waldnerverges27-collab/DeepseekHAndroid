@@ -200,6 +200,7 @@ jobs:
             echo "- **Sello del contenedor embebido**: \`${ROOTFS_STAMP}\`"
             echo "- **Entorno embebido (100% offline tras el primer arranque, sin root ni Termux)**:"
             echo "  - Debian 13 (Trixie, \`glibc 2.41\`) \`arm64\`"
+            echo "  - **Zsh + Oh My Zsh** preinstalado con \`zsh-autosuggestions\`, \`zsh-syntax-highlighting\` y \`zsh-completions\`"
             echo "  - Última versión estable de **Node.js** + \`npm\`, \`npx\`, \`pnpm\`, \`corepack\`, cabeceras C/C++ y \`dsh-update-node\`"
             echo "  - **\`@deepseek-ai/dsh\`** preinstalado y configurado"
             echo "  - **PRoot** + \`libtalloc\` + \`libandroid-shmem\` + **Terminal PTY nativa (\`libtermux.so\`)**"

@@ -99,8 +99,14 @@ chroot "$ROOTFS" /usr/bin/env -i \
   /bin/bash -c "
     apt-get update &&
     apt-get install -y --no-install-recommends \
-      bash ca-certificates curl git jq less libatomic1 nano openssh-client \
-      procps python3 python3-venv ripgrep tar unzip xz-utils &&
+      bash bash-completion ca-certificates curl git jq less libatomic1 nano openssh-client \
+      procps python3 python3-venv ripgrep tar unzip xz-utils zsh &&
+    git clone --depth 1 https://github.com/ohmyzsh/ohmyzsh.git /root/.oh-my-zsh &&
+    git clone --depth 1 https://github.com/zsh-users/zsh-autosuggestions.git /root/.oh-my-zsh/custom/plugins/zsh-autosuggestions &&
+    git clone --depth 1 https://github.com/zsh-users/zsh-syntax-highlighting.git /root/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting &&
+    git clone --depth 1 https://github.com/zsh-users/zsh-completions.git /root/.oh-my-zsh/custom/plugins/zsh-completions &&
+    find /root/.oh-my-zsh -name '.git' -type d -prune -exec rm -rf {} + &&
+    sed -i 's|^root:\(.*\):/bin/bash$|root:\1:/bin/zsh|' /etc/passwd &&
     apt-get clean
   "
 
@@ -171,8 +177,10 @@ fi
 
 log "6/7 Instalando scripts de compatibilidad Android/PRoot y limpiando cachés..."
 cp "${PROJECT_ROOT}/app/src/main/assets/container/dsh-android-preload.cjs" "${ROOTFS}/etc/dsh-android-preload.cjs"
-mkdir -p "${ROOTFS}/etc/profile.d" "${ROOTFS}/usr/local/bin" "${ROOTFS}/root/workspace" "${ROOTFS}/mnt/saf"
+mkdir -p "${ROOTFS}/etc/profile.d" "${ROOTFS}/etc/zsh" "${ROOTFS}/usr/local/bin" "${ROOTFS}/root/workspace" "${ROOTFS}/mnt/saf" "${ROOTFS}/.l2s"
 cp "${PROJECT_ROOT}/app/src/main/assets/container/profile-dsh.sh" "${ROOTFS}/etc/profile.d/dsh-android.sh"
+cp "${PROJECT_ROOT}/app/src/main/assets/container/zshrc-dsh.zsh" "${ROOTFS}/etc/zsh/dsh-zshrc.zsh"
+printf '# dsh-android-ohmyzsh\n[ -f /etc/zsh/dsh-zshrc.zsh ] && source /etc/zsh/dsh-zshrc.zsh\n' > "${ROOTFS}/root/.zshrc"
 cp "${PROJECT_ROOT}/app/src/main/assets/container/verify-shared-env.sh" "${ROOTFS}/usr/local/bin/dsh-doctor"
 chmod 0755 "${ROOTFS}/usr/local/bin/dsh-doctor" "${ROOTFS}/usr/local/bin/dsh-update-node"
 ln -sfn /mnt/saf "${ROOTFS}/root/saf"

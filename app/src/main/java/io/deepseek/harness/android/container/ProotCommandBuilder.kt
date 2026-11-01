@@ -100,8 +100,8 @@ object ProotCommandBuilder {
     }
 
     /**
-     * Construye la especificación para abrir una terminal interactiva (`bash --login`)
-     * dentro del MISMO contenedor PRoot que ejecuta el motor `dsh`.
+     * Construye la especificación para abrir una terminal interactiva (`zsh --login` con
+     * Oh My Zsh, o `bash --login` como respaldo) dentro del MISMO contenedor PRoot que ejecuta `dsh`.
      */
     fun buildInteractiveBashSpec(
         config: ProotConfig,
@@ -111,8 +111,11 @@ object ProotCommandBuilder {
         return buildContainerSpec(
             config = config,
             guestWorkingDir = guestWorkingDir,
-            extraGuestEnv = mapOf("DSH_PORT" to port.toString()),
-            innerCommand = listOf("/bin/bash", "--login"),
+            extraGuestEnv = mapOf(
+                "DSH_PORT" to port.toString(),
+                "SHELL" to config.guestInteractiveShell,
+            ),
+            innerCommand = listOf(config.guestInteractiveShell, "--login"),
         )
     }
 
@@ -184,7 +187,13 @@ object ProotCommandBuilder {
 
     internal fun buildHostEnvironment(config: ProotConfig): Map<String, String> = buildMap {
         put("PROOT_TMP_DIR", config.prootTmpDir.absolutePath)
-        put("PROOT_L2S_DIR", config.prootL2sDir.absolutePath)
+        // CRÍTICO: PROOT_L2S_DIR debe residir estrictamente dentro de config.rootfsDir
+        // (p.ej. <rootfs>/.l2s) para que detranslate_path()/translate_path() resuelvan los
+        // enlaces duros emulados por fs.link() sin provocar ENOENT al abrir sesiones .zstd.
+        val rootPrefix = config.rootfsDir.absolutePath.trimEnd('/') + "/"
+        if (config.prootL2sDir.absolutePath.startsWith(rootPrefix)) {
+            put("PROOT_L2S_DIR", config.prootL2sDir.absolutePath)
+        }
         put("LD_LIBRARY_PATH", config.ldLibraryPath)
         put("HOME", config.rootfsDir.absolutePath)
         put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/system/bin")

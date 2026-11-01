@@ -11,26 +11,26 @@ import java.util.Properties;
  */
 public final class TerminalColorScheme {
 
-    /** http://upload.wikimedia.org/wikipedia/en/1/15/Xterm_256color_chart.svg, but with blue color brighter. */
+    /** Modern high-contrast dark palette (GitHub Dark / Tokyo Night inspired) optimized for Zsh + Oh My Zsh. */
     private static final int[] DEFAULT_COLORSCHEME = {
-        // 16 original colors. First 8 are dim.
-        0xff000000, // black
-        0xffcd0000, // dim red
-        0xff00cd00, // dim green
-        0xffcdcd00, // dim yellow
-        0xff6495ed, // dim blue
-        0xffcd00cd, // dim magenta
-        0xff00cdcd, // dim cyan
-        0xffe5e5e5, // dim white
-        // Second 8 are bright:
-        0xff7f7f7f, // medium grey
-        0xffff0000, // bright red
-        0xff00ff00, // bright green
-        0xffffff00, // bright yellow
-        0xff5c5cff, // light blue
-        0xffff00ff, // bright magenta
-        0xff00ffff, // bright cyan
-        0xffffffff, // bright white
+        // 16 ANSI colors. First 8 normal:
+        0xff161b22, // 0: black
+        0xfff85149, // 1: red (invalid commands / errors)
+        0xff3fb950, // 2: green (valid commands / executables)
+        0xffd29922, // 3: yellow (quoted strings / warnings)
+        0xff58a6ff, // 4: blue (directories / badges)
+        0xffbc8cff, // 5: magenta (git branches / keywords)
+        0xff39c5cf, // 6: cyan (options / symlinks / prompt dir)
+        0xffc9d1d9, // 7: white
+        // Second 8 bright:
+        0xff6e7681, // 8: bright black / slate grey (zsh-autosuggestions ghost text)
+        0xffff7b72, // 9: bright red
+        0xff56d364, // 10: bright green
+        0xffe3b341, // 11: bright yellow
+        0xff79c0ff, // 12: bright blue
+        0xffd2a8ff, // 13: bright magenta
+        0xff56d4dd, // 14: bright cyan
+        0xffffffff, // 15: bright white
 
         // 216 color cube, six shades of each color:
         0xff000000, 0xff00005f, 0xff000087, 0xff0000af, 0xff0000d7, 0xff0000ff, 0xff005f00, 0xff005f5f, 0xff005f87, 0xff005faf, 0xff005fd7, 0xff005fff,
@@ -56,8 +56,8 @@ public final class TerminalColorScheme {
         0xff080808, 0xff121212, 0xff1c1c1c, 0xff262626, 0xff303030, 0xff3a3a3a, 0xff444444, 0xff4e4e4e, 0xff585858, 0xff626262, 0xff6c6c6c, 0xff767676,
         0xff808080, 0xff8a8a8a, 0xff949494, 0xff9e9e9e, 0xffa8a8a8, 0xffb2b2b2, 0xffbcbcbc, 0xffc6c6c6, 0xffd0d0d0, 0xffdadada, 0xffe4e4e4, 0xffeeeeee,
 
-        // COLOR_INDEX_DEFAULT_FOREGROUND, COLOR_INDEX_DEFAULT_BACKGROUND and COLOR_INDEX_DEFAULT_CURSOR:
-        0xffffffff, 0xff000000, 0xffffffff};
+        // COLOR_INDEX_DEFAULT_FOREGROUND (#E6EDF3), COLOR_INDEX_DEFAULT_BACKGROUND (#0B0E14) and COLOR_INDEX_DEFAULT_CURSOR (#38BDF8):
+        0xffe6edf3, 0xff0b0e14, 0xff38bdf8};
 
     public final int[] mDefaultColors = new int[TextStyle.NUM_INDEXED_COLORS];
 
