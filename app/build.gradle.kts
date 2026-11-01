@@ -19,8 +19,8 @@ android {
     // extractNativeLibs=true / useLegacyPackaging=true), cumpliendo SELinux W^X.
     targetSdk = 34
 
-    versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 4
-    versionName = (project.findProperty("versionName") as String?) ?: "1.0.3"
+    versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 5
+    versionName = (project.findProperty("versionName") as String?) ?: "1.0.4"
 
     val abiProp = (project.findProperty("abiFilters") as String?)
     ndk {

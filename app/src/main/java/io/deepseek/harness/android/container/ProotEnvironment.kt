@@ -61,13 +61,14 @@ object ProotEnvironment {
 
     fun prepare(context: Context): ProotConfig = synchronized(prepareLock) {
         val prefs = AppPreferences(context)
-        val rootfsDir = AppPaths.rootfsDir(context)
-        if (!rootfsDir.isDirectory) {
-            throw IOException("El directorio rootfs no existe aún: ${rootfsDir.absolutePath}")
+        val rawRootfsDir = AppPaths.rootfsDir(context)
+        if (!rawRootfsDir.isDirectory) {
+            throw IOException("El directorio rootfs no existe aún: ${rawRootfsDir.absolutePath}")
         }
+        val rootfsDir = rawRootfsDir.canonicalOrAbsoluteFile()
 
-        val nativeLibDir = File(context.applicationInfo.nativeLibraryDir)
-        val prootLibsDir = AppPaths.prootLibsDir(context)
+        val nativeLibDir = File(context.applicationInfo.nativeLibraryDir).canonicalOrAbsoluteFile()
+        val prootLibsDir = AppPaths.prootLibsDir(context).canonicalOrAbsoluteFile()
 
         val (prootBin, loaderBin, loader32Bin, extraLibDir) = resolveProotBinaries(
             context = context,
@@ -76,15 +77,18 @@ object ProotEnvironment {
         )
 
         val ldPathParts = buildList {
-            add(prootLibsDir.absolutePath)
-            extraLibDir?.let { add(it.absolutePath) }
-            add(nativeLibDir.absolutePath)
+            add(prootLibsDir.canonicalOrAbsolutePath())
+            extraLibDir?.let { add(it.canonicalOrAbsolutePath()) }
+            add(nativeLibDir.canonicalOrAbsolutePath())
         }.distinct()
 
-        val resolvConf = writeResolvConf(context)
-        val hostsFile = writeHostsFile(context)
+        val resolvConf = writeResolvConf(context).canonicalOrAbsoluteFile()
+        val hostsFile = writeHostsFile(context).canonicalOrAbsoluteFile()
         val fakeProcBinds = prepareFakeProcBinds(context)
-        migrateLegacyProotL2sIfNeeded(context, rootfsDir)
+        repairAndCanonicalizeProotL2s(
+            rawRootfsDir = rawRootfsDir,
+            legacyL2sDir = AppPaths.legacyProotL2sDir(context),
+        )
         installGuestIntegrationFiles(context, rootfsDir)
 
         val nodePath = AppPaths.resolveGuestNodePath(rootfsDir)
@@ -93,23 +97,24 @@ object ProotEnvironment {
             ?: "/opt/dsh/node_modules/@deepseek-ai/dsh/lib/bin.js"
         val interactiveShell = AppPaths.resolveGuestInteractiveShell(rootfsDir)
 
-        val extRoot = resolveAccessibleExternalStorageRoot()
+        val extRoot = resolveAccessibleExternalStorageRoot()?.canonicalOrAbsoluteFile()
+        val prootL2sDir = File(rootfsDir, ".l2s").apply { mkdirs() }.canonicalOrAbsoluteFile()
 
         ProotConfig(
-            prootExecutable = prootBin,
-            prootLoader = loaderBin,
-            prootLoader32 = loader32Bin,
+            prootExecutable = prootBin.canonicalOrAbsoluteFile(),
+            prootLoader = loaderBin?.canonicalOrAbsoluteFile(),
+            prootLoader32 = loader32Bin?.canonicalOrAbsoluteFile(),
             ldLibraryPath = ldPathParts.joinToString(":"),
-            prootTmpDir = AppPaths.prootTmpDir(context),
-            prootL2sDir = AppPaths.prootL2sDir(context),
+            prootTmpDir = AppPaths.prootTmpDir(context).canonicalOrAbsoluteFile(),
+            prootL2sDir = prootL2sDir,
             rootfsDir = rootfsDir,
-            sharedTmpDir = AppPaths.sharedContainerTmpDir(context),
-            sharedShmDir = AppPaths.sharedContainerShmDir(context),
+            sharedTmpDir = AppPaths.sharedContainerTmpDir(context).canonicalOrAbsoluteFile(),
+            sharedShmDir = AppPaths.sharedContainerShmDir(context).canonicalOrAbsoluteFile(),
             resolvConfFile = resolvConf,
             hostsFile = hostsFile,
             fakeProcBinds = fakeProcBinds,
-            workspaceHostDir = AppPaths.workspaceHostDir(context),
-            safMountsHostDir = AppPaths.safMountsHostDir(context),
+            workspaceHostDir = AppPaths.workspaceHostDir(context).canonicalOrAbsoluteFile(),
+            safMountsHostDir = AppPaths.safMountsHostDir(context).canonicalOrAbsoluteFile(),
             externalStorageRoot = extRoot,
             guestNodePath = nodePath,
             guestDshEntry = dshEntry,
@@ -284,7 +289,7 @@ object ProotEnvironment {
                 if (!fakeFile.isFile || fakeFile.length() == 0L) {
                     fakeFile.writeText(content())
                 }
-                binds.add("${fakeFile.absolutePath}:$procPath")
+                binds.add("${fakeFile.canonicalOrAbsolutePath()}:$procPath")
             }
         }
 
@@ -317,71 +322,139 @@ object ProotEnvironment {
     }
 
     /**
-     * Migra archivos de enlaces duros creados en la ruta antigua `<filesDir>/proot-l2s` hacia
-     * `<filesDir>/rootfs/.l2s` y repara enlaces simbólicos en `/root/.dsh` para evitar `ENOENT`.
+     * Migra y repara artefactos de `PROOT_L2S_DIR`:
+     * 1. Mueve entradas heredadas desde `<filesDir>/proot-l2s` hacia `<canonicalRootfs>/.l2s`.
+     * 2. Reescribe en `<canonicalRootfs>/.l2s` cualquier enlace intermedio cuyo destino use
+     *    `/data/user/0/...` en lugar de la ruta canónica `/data/data/...`.
+     * 3. Convierte cualquier enlace simbólico `.l2s` dentro de `/root/.dsh` en un archivo regular
+     *    nativo (o elimina enlaces colgantes si su respaldo ya no existe), recuperando sesiones
+     *    creadas en versiones previas y evitando errores `ENOENT` en `session.v4.jsonl.zstd`.
      */
-    internal fun migrateLegacyProotL2sIfNeeded(context: Context, rootfsDir: File) {
-        val legacyDir = AppPaths.legacyProotL2sDir(context)
-        val targetL2sDir = File(rootfsDir, ".l2s").apply { mkdirs() }
-        val legacyPrefix = legacyDir.absolutePath.trimEnd('/') + "/"
-        val newPrefix = targetL2sDir.absolutePath.trimEnd('/') + "/"
+    internal fun repairAndCanonicalizeProotL2s(rawRootfsDir: File, legacyL2sDir: File?) {
+        val canonicalRootfsDir = rawRootfsDir.canonicalOrAbsoluteFile()
+        val canonicalL2sDir = File(canonicalRootfsDir, ".l2s").apply { mkdirs() }.canonicalOrAbsoluteFile()
+        val canonicalL2sPrefix = canonicalL2sDir.path.trimEnd('/') + "/"
 
-        if (legacyDir.isDirectory) {
+        val stalePrefixes = LinkedHashSet<String>().apply {
+            val rawL2sPrefix = File(rawRootfsDir.absoluteFile, ".l2s").path.trimEnd('/') + "/"
+            if (rawL2sPrefix != canonicalL2sPrefix) add(rawL2sPrefix)
+            legacyL2sDir?.let { leg ->
+                val legRaw = leg.absolutePath.trimEnd('/') + "/"
+                val legCanon = leg.canonicalOrAbsolutePath().trimEnd('/') + "/"
+                if (legRaw != canonicalL2sPrefix) add(legRaw)
+                if (legCanon != canonicalL2sPrefix) add(legCanon)
+            }
+        }
+
+        fun rewriteToCanonicalL2s(targetPath: String): String {
+            for (prefix in stalePrefixes) {
+                if (targetPath.startsWith(prefix)) {
+                    return canonicalL2sPrefix + targetPath.removePrefix(prefix)
+                }
+            }
+            return targetPath
+        }
+
+        if (legacyL2sDir != null && legacyL2sDir.isDirectory &&
+            legacyL2sDir.canonicalOrAbsolutePath() != canonicalL2sDir.path
+        ) {
             try {
-                legacyDir.listFiles()?.forEach { child ->
-                    val dst = File(targetL2sDir, child.name)
+                legacyL2sDir.listFiles()?.forEach { child ->
+                    val dst = File(canonicalL2sDir, child.name)
                     val childPath = child.toPath()
                     if (Files.isSymbolicLink(childPath)) {
                         val rawTarget = Files.readSymbolicLink(childPath).toString()
-                        val rewritten = if (rawTarget.startsWith(legacyPrefix)) {
-                            newPrefix + rawTarget.removePrefix(legacyPrefix)
-                        } else {
-                            rawTarget
-                        }
+                        val rewritten = rewriteToCanonicalL2s(rawTarget)
                         Files.deleteIfExists(dst.toPath())
                         Files.createSymbolicLink(dst.toPath(), Paths.get(rewritten))
                     } else if (child.isFile) {
                         child.copyTo(dst, overwrite = true)
                     }
                 }
-                legacyDir.deleteRecursively()
+                legacyL2sDir.deleteRecursively()
             } catch (e: Exception) {
                 AppLogger.warn("ProotEnv", "Error migrando proot-l2s heredado", e)
             }
         }
 
-        val dshHome = File(rootfsDir, "root/.dsh")
+        // Canonicalizar enlaces intermedios dentro de `<canonicalRootfs>/.l2s`
+        try {
+            canonicalL2sDir.listFiles()?.forEach { child ->
+                val childPath = child.toPath()
+                if (Files.isSymbolicLink(childPath)) {
+                    val rawTarget = Files.readSymbolicLink(childPath).toString()
+                    val rewritten = rewriteToCanonicalL2s(rawTarget)
+                    if (rewritten != rawTarget) {
+                        Files.deleteIfExists(childPath)
+                        Files.createSymbolicLink(childPath, Paths.get(rewritten))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            AppLogger.warn("ProotEnv", "Error canonicalizando enlaces en .l2s", e)
+        }
+
+        val dshHome = File(canonicalRootfsDir, "root/.dsh")
         if (dshHome.isDirectory) {
-            repairL2sSymlinksRecursive(dshHome, legacyPrefix, newPrefix)
+            materializeOrCleanDshL2sSymlinks(dshHome, ::rewriteToCanonicalL2s)
         }
     }
 
-    private fun repairL2sSymlinksRecursive(entry: File, legacyPrefix: String, newPrefix: String) {
+    private fun materializeOrCleanDshL2sSymlinks(
+        entry: File,
+        rewriteToCanonicalL2s: (String) -> String,
+    ) {
         val path = entry.toPath()
         try {
             if (Files.isSymbolicLink(path)) {
-                val targetStr = Files.readSymbolicLink(path).toString()
-                if (targetStr.startsWith(legacyPrefix)) {
-                    val updatedTarget = newPrefix + targetStr.removePrefix(legacyPrefix)
+                val firstTarget = Files.readSymbolicLink(path).toString()
+                val isL2sLink = firstTarget.contains("/.l2s/") ||
+                    firstTarget.contains("/proot-l2s/") ||
+                    firstTarget.contains(".proot.l2s.") ||
+                    firstTarget.contains("/.l2s.")
+                if (!isL2sLink) return
+
+                val backingFile = resolveL2sBackingFile(firstTarget, rewriteToCanonicalL2s)
+                if (backingFile != null && backingFile.isFile) {
+                    val tmpCopy = File(entry.parentFile, "${entry.name}.repair.tmp")
+                    backingFile.copyTo(tmpCopy, overwrite = true)
                     Files.deleteIfExists(path)
-                    if (File(updatedTarget).exists() || Files.isSymbolicLink(Paths.get(updatedTarget))) {
-                        Files.createSymbolicLink(path, Paths.get(updatedTarget))
+                    if (!tmpCopy.renameTo(entry)) {
+                        tmpCopy.copyTo(entry, overwrite = true)
+                        tmpCopy.delete()
                     }
-                } else if ((targetStr.contains("/.l2s/") || targetStr.contains(".proot.l2s.")) &&
-                    !File(targetStr).exists()
-                ) {
-                    // Limpiar enlace colgante huérfano dejado por un intento fallido previo
+                } else {
+                    // Limpiar enlace colgante huérfano cuyo respaldo ya no existe
                     Files.deleteIfExists(path)
                 }
                 return
             }
             if (entry.isDirectory) {
                 entry.listFiles()?.forEach { child ->
-                    repairL2sSymlinksRecursive(child, legacyPrefix, newPrefix)
+                    materializeOrCleanDshL2sSymlinks(child, rewriteToCanonicalL2s)
                 }
             }
         } catch (_: Exception) {
         }
+    }
+
+    private fun resolveL2sBackingFile(
+        initialTarget: String,
+        rewriteToCanonicalL2s: (String) -> String,
+    ): File? {
+        var current = rewriteToCanonicalL2s(initialTarget)
+        repeat(4) {
+            val candidatePath = Paths.get(current)
+            if (Files.isSymbolicLink(candidatePath)) {
+                val nextRaw = Files.readSymbolicLink(candidatePath).toString()
+                current = rewriteToCanonicalL2s(nextRaw)
+            } else {
+                val file = File(current)
+                return if (file.isFile) file else null
+            }
+        }
+        val finalCandidate = File(current)
+        return if (finalCandidate.isFile) finalCandidate else null
     }
 
     /**

@@ -109,10 +109,13 @@ object RootfsExtractor {
             lockFile.parentFile?.mkdirs()
             lockFile.writeText(System.currentTimeMillis().toString())
 
-            // Migrar primero cualquier proot-l2s heredado hacia rootfs/.l2s antes del respaldo
+            // Migrar y reparar enlaces proot-l2s previos antes de respaldar /root/.dsh
             if (rootfsDir.isDirectory) {
                 try {
-                    ProotEnvironment.migrateLegacyProotL2sIfNeeded(context, rootfsDir)
+                    ProotEnvironment.repairAndCanonicalizeProotL2s(
+                        rawRootfsDir = rootfsDir,
+                        legacyL2sDir = AppPaths.legacyProotL2sDir(context),
+                    )
                 } catch (_: Exception) {
                 }
             }

@@ -1,9 +1,16 @@
 package io.deepseek.harness.android.container
 
 import io.deepseek.harness.android.core.AppPaths
+import java.io.File
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Paths
+
+internal fun File.canonicalOrAbsoluteFile(): File =
+    runCatching { canonicalFile }.getOrDefault(absoluteFile)
+
+internal fun File.canonicalOrAbsolutePath(): String =
+    canonicalOrAbsoluteFile().path
 
 /**
  * Especificación completa para lanzar un proceso dentro del contenedor PRoot compartido.
@@ -143,12 +150,13 @@ object ProotCommandBuilder {
     ): ProotLaunchSpec {
         val hostEnv = buildHostEnvironment(config)
         val guestEnv = buildSharedGuestEnvironment(config, extraGuestEnv)
+        val canonicalRootfsPath = config.rootfsDir.canonicalOrAbsolutePath()
 
         val cmd = ArrayList<String>(56)
         if (config.useLinker64Wrapper) {
             cmd.add(LINKER64_PATH)
         }
-        cmd.add(config.prootExecutable.absolutePath)
+        cmd.add(config.prootExecutable.canonicalOrAbsolutePath())
         cmd.add("--kill-on-exit")
         cmd.add("-0")
         cmd.add("--link2symlink")
@@ -157,7 +165,7 @@ object ProotCommandBuilder {
         cmd.add("-L")
         cmd.add("-H")
         cmd.add("-r")
-        cmd.add(config.rootfsDir.absolutePath)
+        cmd.add(canonicalRootfsPath)
 
         // Puntos de montaje del sistema y del espacio compartido
         val binds = buildSharedBindMounts(config)
@@ -181,24 +189,28 @@ object ProotCommandBuilder {
         return ProotLaunchSpec(
             command = cmd,
             hostEnvironment = hostEnv,
-            workingDirectoryHost = config.rootfsDir.absolutePath,
+            workingDirectoryHost = canonicalRootfsPath,
         )
     }
 
     internal fun buildHostEnvironment(config: ProotConfig): Map<String, String> = buildMap {
-        put("PROOT_TMP_DIR", config.prootTmpDir.absolutePath)
-        // CRÍTICO: PROOT_L2S_DIR debe residir estrictamente dentro de config.rootfsDir
-        // (p.ej. <rootfs>/.l2s) para que detranslate_path()/translate_path() resuelvan los
-        // enlaces duros emulados por fs.link() sin provocar ENOENT al abrir sesiones .zstd.
-        val rootPrefix = config.rootfsDir.absolutePath.trimEnd('/') + "/"
-        if (config.prootL2sDir.absolutePath.startsWith(rootPrefix)) {
-            put("PROOT_L2S_DIR", config.prootL2sDir.absolutePath)
+        val canonicalRootfsPath = config.rootfsDir.canonicalOrAbsolutePath()
+        val canonicalL2sPath = config.prootL2sDir.canonicalOrAbsolutePath()
+        put("PROOT_TMP_DIR", config.prootTmpDir.canonicalOrAbsolutePath())
+        // CRÍTICO: En Android, `context.filesDir` devuelve `/data/user/0/<pkg>/files` donde
+        // `/data/user/0` es un symlink hacia `/data/data`. PRoot ejecuta `realpath2()` sobre `-r`
+        // (`get_root(tracee) = /data/data/<pkg>/files/rootfs`), pero lee `PROOT_L2S_DIR` de forma
+        // literal sin `realpath()`. Usar `canonicalPath` en ambos garantiza que `detranslate_path()`
+        // reconozca el prefijo exacto de `get_root(tracee)` y nunca lance ENOENT al abrir hardlinks.
+        val rootPrefix = canonicalRootfsPath.trimEnd('/') + "/"
+        if (canonicalL2sPath.startsWith(rootPrefix)) {
+            put("PROOT_L2S_DIR", canonicalL2sPath)
         }
         put("LD_LIBRARY_PATH", config.ldLibraryPath)
-        put("HOME", config.rootfsDir.absolutePath)
+        put("HOME", canonicalRootfsPath)
         put("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/system/bin")
-        config.prootLoader?.let { put("PROOT_LOADER", it.absolutePath) }
-        config.prootLoader32?.let { put("PROOT_LOADER_32", it.absolutePath) }
+        config.prootLoader?.let { put("PROOT_LOADER", it.canonicalOrAbsolutePath()) }
+        config.prootLoader32?.let { put("PROOT_LOADER_32", it.canonicalOrAbsolutePath()) }
         if (config.disableSeccomp) {
             put("PROOT_NO_SECCOMP", "1")
         }
@@ -222,18 +234,18 @@ object ProotCommandBuilder {
         }
         add("/sys:/sys")
         addAll(config.fakeProcBinds)
-        add("${config.sharedShmDir.absolutePath}:/dev/shm")
-        add("${config.sharedTmpDir.absolutePath}:/tmp")
-        add("${config.resolvConfFile.absolutePath}:/etc/resolv.conf")
-        add("${config.hostsFile.absolutePath}:/etc/hosts")
-        add("${config.workspaceHostDir.absolutePath}:${AppPaths.GUEST_WORKSPACE}")
-        add("${config.safMountsHostDir.absolutePath}:${AppPaths.GUEST_SAF_MOUNT_ROOT}")
+        add("${config.sharedShmDir.canonicalOrAbsolutePath()}:/dev/shm")
+        add("${config.sharedTmpDir.canonicalOrAbsolutePath()}:/tmp")
+        add("${config.resolvConfFile.canonicalOrAbsolutePath()}:/etc/resolv.conf")
+        add("${config.hostsFile.canonicalOrAbsolutePath()}:/etc/hosts")
+        add("${config.workspaceHostDir.canonicalOrAbsolutePath()}:${AppPaths.GUEST_WORKSPACE}")
+        add("${config.safMountsHostDir.canonicalOrAbsolutePath()}:${AppPaths.GUEST_SAF_MOUNT_ROOT}")
 
         // Si el usuario otorgó acceso al almacenamiento primario, exponer también la ruta
         // real (/storage/emulated/0) para que los enlaces simbólicos creados en /mnt/saf/<alias>
         // resuelvan de forma directa y transparente dentro de PRoot sin duplicar archivos.
         config.externalStorageRoot?.let { ext ->
-            val path = ext.absolutePath
+            val path = ext.canonicalOrAbsolutePath()
             add("$path:$path")
             add("$path:/mnt/sdcard")
         }
