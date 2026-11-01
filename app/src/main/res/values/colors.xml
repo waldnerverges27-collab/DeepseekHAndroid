@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <color name="dsh_primary">#4D6BFE</color>
+  <color name="dsh_primary_dark">#3651D4</color>
+  <color name="dsh_background_dark">#0F1117</color>
+  <color name="dsh_surface_dark">#181B24</color>
+  <color name="ic_launcher_background">#0F172A</color>
+</resources>

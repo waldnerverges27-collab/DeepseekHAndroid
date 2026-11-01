@@ -1,0 +1,17 @@
+/* Ajustes táctiles y de viewport para la Web UI de DeepSeek Harness en pantallas móviles */
+html, body {
+  overscroll-behavior-y: contain;
+  -webkit-tap-highlight-color: transparent;
+}
+
+pre, code {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 768px) {
+  dialog, [role="dialog"] {
+    max-width: 96vw !important;
+    max-height: 92vh !important;
+  }
+}

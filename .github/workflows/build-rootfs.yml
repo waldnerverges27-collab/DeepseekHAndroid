@@ -1,0 +1,157 @@
+name: Build Full Autonomous APK (ARM64 Rootfs + Latest Node.js + dsh)
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  workflow_dispatch:
+    inputs:
+      dsh_version:
+        description: "Versión de @deepseek-ai/dsh en npm (ej. latest o 0.2.1-rc.5)"
+        required: false
+        default: "latest"
+      node_version:
+        description: "Versión de Node.js glibc (latest = última estable actual p.ej. 26.x+, lts, o X.Y.Z)"
+        required: false
+        default: "latest"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: full-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-rootfs:
+    name: Construir rootfs.tar.xz ARM64 (Debian 13 + Node.js Latest + dsh)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar QEMU para emulación linux/arm64
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Construir rootfs ARM64 completo (Debian 13 Trixie + último Node.js estable + dsh)
+        env:
+          DSH_VERSION: ${{ inputs.dsh_version || 'latest' }}
+          NODE_VERSION: ${{ inputs.node_version || 'latest' }}
+        run: |
+          chmod +x scripts/*.sh
+          ./scripts/build-rootfs-docker.sh
+
+      - name: Subir artefacto rootfs.tar.xz
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-rootfs-bundle
+          path: |
+            app/src/main/assets/rootfs.tar.xz
+            app/src/main/assets/rootfs.tar.xz.sha256
+            app/src/main/assets/rootfs.version
+          retention-days: 14
+
+  package-autonomous-apk:
+    name: Compilar APK autónomo completo y publicar Release descargable
+    needs: build-rootfs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Descargar rootfs.tar.xz construido
+        uses: actions/download-artifact@v4
+        with:
+          name: arm64-rootfs-bundle
+          path: app/src/main/assets
+
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Configurar Android SDK y NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-35 platform-tools build-tools;35.0.0 ndk;27.2.12479018 cmake;3.22.1"
+
+      - name: Configurar Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Generar keystore de firma para que el APK Release sea instalable directamente
+        run: |
+          if [ ! -f release.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore release.keystore \
+              -storetype PKCS12 \
+              -alias release \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass android \
+              -keypass android \
+              -dname "CN=DeepSeekHarnessAndroid, OU=Mobile, O=OpenSource, L=Ashburn, ST=VA, C=US"
+          fi
+
+      - name: Descargar binarios PRoot ARM64, ejecutar tests y compilar APKs (Debug + Release firmados)
+        env:
+          RELEASE_STORE_PASSWORD: android
+          RELEASE_KEY_ALIAS: release
+          RELEASE_KEY_PASSWORD: android
+        run: |
+          chmod +x scripts/*.sh gradlew
+          ./scripts/fetch-proot-binaries.sh
+          ./gradlew testDebugUnitTest assembleDebug assembleRelease
+          mkdir -p dist-release
+          cp app/build/outputs/apk/release/app-release.apk dist-release/DeepSeekHarness-Android-arm64-release.apk
+          cp app/build/outputs/apk/debug/app-debug.apk dist-release/DeepSeekHarness-Android-arm64-debug.apk
+          cp app/src/main/assets/rootfs.tar.xz dist-release/rootfs.tar.xz
+          cp app/src/main/assets/rootfs.tar.xz.sha256 dist-release/rootfs.tar.xz.sha256
+          cp app/src/main/assets/rootfs.version dist-release/rootfs.version
+          (cd dist-release && sha256sum *.apk > SHA256SUMS.txt)
+          ls -lh dist-release/
+
+      - name: Subir artefactos APK en GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeepSeekHarness-Autonomous-ARM64-APK
+          path: dist-release/*
+          retention-days: 30
+
+      - name: Publicar APKs compilados en GitHub Releases para descarga directa
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ROOTFS_STAMP="$(cat dist-release/rootfs.version)"
+          TAG="v1.0.0-autonomous"
+          NOTES=$(cat <<EOF
+          ## DeepSeek Harness para Android — APK Autónomo Compilado
+
+          - **Rama compilada**: \`${GITHUB_REF_NAME}\` (\`${GITHUB_SHA::7}\`)
+          - **Sello del contenedor embebido**: \`${ROOTFS_STAMP}\`
+          - **Contenido incluido dentro del APK (100% offline tras el primer arranque, sin root ni Termux)**:
+            - Debian 13 (Trixie, \`glibc 2.41\`) \`arm64\`
+            - Última versión estable de **Node.js** (\`npm\`, \`npx\`, \`pnpm\`, \`yarn\`, cabeceras C/C++ y \`dsh-update-node\`)
+            - **\`@deepseek-ai/dsh\`** preinstalado y configurado
+            - **PRoot** + \`libtalloc\` + \`libandroid-shmem\` + **Terminal PTY nativa (\`libtermux.so\`)**
+
+          ### Qué archivo descargar en tu Android
+          - **\`DeepSeekHarness-Android-arm64-release.apk\`** *(Recomendado)*: APK firmado listo para instalar directamente en Android 8.0–15+ (\`arm64-v8a\`).
+          - **\`DeepSeekHarness-Android-arm64-debug.apk\`**: variante con símbolos de depuración habilitados.
+          EOF
+          )
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist-release/* --clobber
+            gh release edit "$TAG" --title "DeepSeek Harness Android — APK Autónomo (Node.js Latest)" --notes "$NOTES" --latest
+          else
+            gh release create "$TAG" dist-release/* \
+              --target "$GITHUB_SHA" \
+              --title "DeepSeek Harness Android — APK Autónomo (Node.js Latest)" \
+              --notes "$NOTES" \
+              --latest
+          fi

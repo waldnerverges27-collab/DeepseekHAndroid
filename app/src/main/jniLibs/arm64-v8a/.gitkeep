@@ -1,0 +1,6 @@
+# Populated by ./scripts/fetch-proot-binaries.sh:
+# - libproot.so
+# - libproot_loader.so
+# - libproot_loader32.so (optional)
+# - libtalloc.so
+# - libandroid-shmem.so

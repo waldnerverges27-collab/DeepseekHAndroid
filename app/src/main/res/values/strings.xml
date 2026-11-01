@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="app_name">DeepSeek Harness</string>
+  <string name="notif_channel_name">Motor DeepSeek Harness</string>
+  <string name="notif_channel_desc">Mantiene activo el contenedor proot y el motor web de dsh en segundo plano</string>
+  <string name="notif_title_running">DeepSeek Harness activo</string>
+  <string name="notif_title_starting">Iniciando DeepSeek Harness…</string>
+  <string name="notif_title_restarting">Reiniciando motor dsh…</string>
+  <string name="notif_title_error">Motor dsh detenido por error</string>
+  <string name="notif_action_open">Abrir</string>
+  <string name="notif_action_restart">Reiniciar</string>
+  <string name="notif_action_stop">Detener</string>
+</resources>

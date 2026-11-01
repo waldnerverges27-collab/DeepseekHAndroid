@@ -1,0 +1,92 @@
+# syntax=docker/dockerfile:1
+# ==============================================================================
+# Dockerfile.rootfs
+#
+# Constructor reproducible multi-plataforma (`--platform linux/arm64`) del rootfs
+# Debian 13 Trixie (glibc 2.41 moderna) + Node.js MÁS ACTUAL (`NODE_VERSION=latest`,
+# resolviendo dinámicamente el último lanzamiento estable en nodejs.org, p.ej. v26.x+)
+# + npm / npx / corepack (pnpm + yarn) + cabeceras C/C++ de Node + `@deepseek-ai/dsh`.
+# ==============================================================================
+ARG BUILDPLATFORM=linux/amd64
+ARG DEBIAN_SUITE=trixie
+
+FROM --platform=linux/arm64 debian:${DEBIAN_SUITE}-slim AS rootfs-stage
+
+ARG DEBIAN_SUITE=trixie
+ARG NODE_VERSION=latest
+ARG DSH_VERSION=latest
+ARG INSTALL_PROOT_SKILLS=1
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+
+COPY app/src/main/assets/container/dsh-android-preload.cjs /etc/dsh-android-preload.cjs
+COPY app/src/main/assets/container/profile-dsh.sh /etc/profile.d/dsh-android.sh
+COPY app/src/main/assets/container/verify-shared-env.sh /usr/local/bin/dsh-doctor
+COPY app/src/main/assets/container/update-node.sh /usr/local/bin/dsh-update-node
+
+# Nota: NODE_OPTIONS="--jitless" se usa ÚNICAMENTE durante este paso RUN de construcción
+# para máxima estabilidad cuando Docker Buildx emula linux/arm64 con QEMU sobre runners x86_64.
+RUN chmod 0755 /usr/local/bin/dsh-doctor /usr/local/bin/dsh-update-node \
+    && apt-get update && apt-get install -y --no-install-recommends \
+      bash \
+      build-essential \
+      ca-certificates \
+      curl \
+      g++ \
+      git \
+      jq \
+      less \
+      libatomic1 \
+      make \
+      nano \
+      openssh-client \
+      procps \
+      python3 \
+      python3-venv \
+      ripgrep \
+      tar \
+      unzip \
+      xz-utils \
+    && /usr/local/bin/dsh-update-node "${NODE_VERSION}" \
+    && NODE_OPTIONS="--jitless" corepack enable --install-directory /usr/local/bin \
+    && NODE_OPTIONS="--jitless" corepack prepare pnpm@latest --activate \
+    && mkdir -p /opt/dsh \
+    && cd /opt/dsh \
+    && NODE_OPTIONS="--jitless" npm init -y >/dev/null \
+    && NODE_OPTIONS="--jitless" npm install --omit=dev "@deepseek-ai/dsh@${DSH_VERSION}" \
+    && ln -sf /opt/dsh/node_modules/.bin/dsh /usr/local/bin/dsh \
+    && NODE_OPTIONS="--jitless" npm cache clean --force \
+    && if [ "${INSTALL_PROOT_SKILLS}" = "1" ]; then \
+         mkdir -p /root/.dsh/skills && \
+         (git clone --depth 1 https://github.com/duke5am/skills-for-proot-distro-ubuntu.git /tmp/proot-skills && \
+          for s in package-installation python-usage shell-usage writing-skills; do \
+            [ -d "/tmp/proot-skills/$s" ] && cp -r "/tmp/proot-skills/$s" /root/.dsh/skills/; \
+          done; rm -rf /tmp/proot-skills) || true; \
+       fi \
+    && NODE_OPTIONS="--jitless" node --version > /etc/dsh-bundled-node-version \
+    && apt-get purge -y --auto-remove build-essential g++ make \
+    && apt-get clean \
+    && rm -rf /usr/share/doc /usr/share/man /usr/share/info /usr/share/locale \
+              /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/* \
+    && mkdir -p /root/workspace /mnt/saf \
+    && ln -sfn /mnt/saf /root/saf
+
+# Etapa empaquetadora ejecutada en la arquitectura nativa del host ($BUILDPLATFORM)
+# para comprimir con xz multi-hilo a máxima velocidad sin penalización de QEMU.
+FROM --platform=$BUILDPLATFORM debian:${DEBIAN_SUITE}-slim AS packager
+RUN apt-get update && apt-get install -y --no-install-recommends tar xz-utils coreutils
+WORKDIR /export
+COPY --from=rootfs-stage / /stage-rootfs/
+RUN cp /stage-rootfs/etc/dsh-bundled-node-version /export/node.version \
+    && rm -rf /stage-rootfs/dev /stage-rootfs/proc /stage-rootfs/sys /stage-rootfs/.dockerenv \
+    && mkdir -p /stage-rootfs/dev /stage-rootfs/proc /stage-rootfs/sys /stage-rootfs/tmp \
+    && XZ_OPT="-T0 -6" tar -cJf /export/rootfs.tar.xz -C /stage-rootfs . \
+    && sha256sum /export/rootfs.tar.xz > /export/rootfs.tar.xz.sha256
+
+FROM scratch AS artifact
+COPY --from=packager /export/rootfs.tar.xz /rootfs.tar.xz
+COPY --from=packager /export/rootfs.tar.xz.sha256 /rootfs.tar.xz.sha256
+COPY --from=packager /export/node.version /node.version

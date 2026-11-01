@@ -1,0 +1,61 @@
+name: Android CI (Tests + APK)
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-build:
+    name: Validar scripts, ejecutar tests JUnit y compilar APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validar sintaxis de scripts Bash y preload Node.js
+        run: |
+          for s in scripts/*.sh app/src/main/assets/container/*.sh; do
+            bash -n "$s"
+          done
+          node --check app/src/main/assets/container/dsh-android-preload.cjs
+          node --check app/src/main/assets/web/compat-polyfills.js
+
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Configurar Android SDK y NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-35 platform-tools build-tools;35.0.0 ndk;27.2.12479018 cmake;3.22.1"
+
+      - name: Configurar caché de Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Descargar binarios PRoot ARM64 en jniLibs
+        run: |
+          chmod +x scripts/*.sh gradlew
+          ./scripts/fetch-proot-binaries.sh
+
+      - name: Preparar rootfs (stub rápido de compilación si no existe rootfs completo)
+        run: |
+          if [ ! -f app/src/main/assets/rootfs.tar.xz ]; then
+            ./scripts/create-stub-rootfs.sh
+          fi
+
+      - name: Ejecutar tests unitarios y compilar Debug APK
+        run: ./gradlew testDebugUnitTest assembleDebug
+
+      - name: Publicar artefacto APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepseek-harness-android-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
