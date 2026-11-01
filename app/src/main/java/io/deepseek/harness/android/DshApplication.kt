@@ -17,8 +17,25 @@ class DshApplication : Application() {
         super.onCreate()
         instance = this
         AppLogger.init(this)
+        installCrashRecorder()
         createNotificationChannels()
         AppLogger.info("App", "Aplicación inicializada (ABI=${Build.SUPPORTED_ABIS.joinToString()})")
+    }
+
+    private fun installCrashRecorder() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                AppLogger.error(
+                    "Crash",
+                    "Excepción no controlada en hilo '${thread.name}': ${throwable.stackTraceToString().take(2000)}",
+                    throwable,
+                )
+            } catch (_: Throwable) {
+            } finally {
+                previous?.uncaughtException(thread, throwable)
+            }
+        }
     }
 
     private fun createNotificationChannels() {

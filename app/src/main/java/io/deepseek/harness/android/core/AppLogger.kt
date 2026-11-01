@@ -30,7 +30,19 @@ object AppLogger {
     private var logFile: File? = null
 
     fun init(context: Context) {
-        logFile = File(AppPaths.logsDir(context), "app-events.log")
+        val file = File(AppPaths.logsDir(context), "app-events.log")
+        logFile = file
+        if (file.isFile) {
+            synchronized(lock) {
+                try {
+                    val previousLines = file.readLines(Charsets.UTF_8).takeLast(120)
+                    ringBuffer.clear()
+                    ringBuffer.addAll(previousLines)
+                    _lines.value = ringBuffer.toList()
+                } catch (_: Exception) {
+                }
+            }
+        }
     }
 
     fun info(scope: String, message: String) {

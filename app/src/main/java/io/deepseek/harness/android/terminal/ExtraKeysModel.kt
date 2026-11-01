@@ -167,7 +167,7 @@ class ExtraKeysController {
                 if (consumeAltModifier()) keyMod = keyMod or KeyHandler.KEYMOD_ALT
                 if (consumeShiftModifier()) keyMod = keyMod or KeyHandler.KEYMOD_SHIFT
 
-                if (terminalView != null) {
+                if (terminalView != null && terminalView.mEmulator != null && terminalView.currentSession != null) {
                     terminalView.handleKeyCode(spec.keyCode, keyMod)
                 } else if (session != null) {
                     val emulator = session.emulator

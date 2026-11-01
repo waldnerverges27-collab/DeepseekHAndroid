@@ -2,18 +2,17 @@ package com.termux.terminal;
 
 import android.annotation.SuppressLint;
 import android.os.Handler;
+import android.os.Looper;
 import android.os.Message;
+import android.os.ParcelFileDescriptor;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
 
 import java.io.File;
-import java.io.FileDescriptor;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.reflect.Field;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
@@ -63,12 +62,13 @@ public final class TerminalSession extends TerminalOutput {
      * The file descriptor referencing the master half of a pseudo-terminal pair, resulting from calling
      * {@link JNI#createSubprocess(String, String, String[], String[], int[], int, int, int, int)}.
      */
-    private int mTerminalFileDescriptor;
+    private int mTerminalFileDescriptor = -1;
+    private ParcelFileDescriptor mTerminalParcelFileDescriptor;
 
     /** Set by the application for user identification of session, not by terminal. */
     public String mSessionName;
 
-    final Handler mMainThreadHandler = new MainThreadHandler();
+    final Handler mMainThreadHandler = new MainThreadHandler(Looper.getMainLooper());
 
     private final String mShellPath;
     private final String mCwd;
@@ -104,7 +104,9 @@ public final class TerminalSession extends TerminalOutput {
         if (mEmulator == null) {
             initializeEmulator(columns, rows, cellWidthPixels, cellHeightPixels);
         } else {
-            JNI.setPtyWindowSize(mTerminalFileDescriptor, rows, columns, cellWidthPixels, cellHeightPixels);
+            if (mShellPid > 0 && mTerminalFileDescriptor >= 0) {
+                JNI.setPtyWindowSize(mTerminalFileDescriptor, rows, columns, cellWidthPixels, cellHeightPixels);
+            }
             mEmulator.resize(columns, rows, cellWidthPixels, cellHeightPixels);
         }
     }
@@ -124,15 +126,48 @@ public final class TerminalSession extends TerminalOutput {
         mEmulator = new TerminalEmulator(this, columns, rows, cellWidthPixels, cellHeightPixels, mTranscriptRows, mClient);
 
         int[] processId = new int[1];
-        mTerminalFileDescriptor = JNI.createSubprocess(mShellPath, mCwd, mArgs, mEnv, processId, rows, columns, cellWidthPixels, cellHeightPixels);
-        mShellPid = processId[0];
+        ParcelFileDescriptor reader = null;
+        ParcelFileDescriptor writer = null;
+        try {
+            mTerminalFileDescriptor = JNI.createSubprocess(mShellPath, mCwd, mArgs, mEnv, processId, rows, columns, cellWidthPixels, cellHeightPixels);
+            mShellPid = processId[0];
+            mTerminalParcelFileDescriptor = ParcelFileDescriptor.adoptFd(mTerminalFileDescriptor);
+            reader = mTerminalParcelFileDescriptor.dup();
+            writer = mTerminalParcelFileDescriptor.dup();
+        } catch (Throwable e) {
+            if (e instanceof Exception) {
+                Logger.logStackTraceWithMessage(mClient, LOG_TAG, "Error creating PTY subprocess", (Exception) e);
+            } else {
+                Logger.logError(mClient, LOG_TAG, "Fatal error creating PTY subprocess: " + e);
+            }
+            finishIfRunning();
+            if (mShellPid > 0) JNI.waitFor(mShellPid);
+            try { if (reader != null) reader.close(); } catch (IOException ignored) {}
+            try { if (writer != null) writer.close(); } catch (IOException ignored) {}
+            try {
+                if (mTerminalParcelFileDescriptor != null) {
+                    mTerminalParcelFileDescriptor.close();
+                } else if (mTerminalFileDescriptor >= 0) {
+                    JNI.close(mTerminalFileDescriptor);
+                }
+            } catch (IOException ignored) {}
+            mTerminalParcelFileDescriptor = null;
+            mTerminalFileDescriptor = -1;
+            mShellPid = -1;
+            mShellExitStatus = 1;
+            byte[] notice = ("\r\n[Error al iniciar PTY: " + e.getMessage() + "]\r\n").getBytes(StandardCharsets.UTF_8);
+            mEmulator.append(notice, notice.length);
+            notifyScreenUpdate();
+            return;
+        }
 
-        final FileDescriptor terminalFileDescriptorWrapped = wrapFileDescriptor(mTerminalFileDescriptor, mClient);
+        final ParcelFileDescriptor readDescriptor = reader;
+        final ParcelFileDescriptor writeDescriptor = writer;
 
         new Thread("TermSessionInputReader[pid=" + mShellPid + "]") {
             @Override
             public void run() {
-                try (InputStream termIn = new FileInputStream(terminalFileDescriptorWrapped)) {
+                try (InputStream termIn = new ParcelFileDescriptor.AutoCloseInputStream(readDescriptor)) {
                     final byte[] buffer = new byte[4096];
                     while (true) {
                         int read = termIn.read(buffer);
@@ -150,7 +185,7 @@ public final class TerminalSession extends TerminalOutput {
             @Override
             public void run() {
                 final byte[] buffer = new byte[4096];
-                try (FileOutputStream termOut = new FileOutputStream(terminalFileDescriptorWrapped)) {
+                try (OutputStream termOut = new ParcelFileDescriptor.AutoCloseOutputStream(writeDescriptor)) {
                     while (true) {
                         int bytesToWrite = mTerminalToProcessIOQueue.read(buffer, true);
                         if (bytesToWrite == -1) return;
@@ -232,26 +267,43 @@ public final class TerminalSession extends TerminalOutput {
 
     /** Finish this terminal session by sending SIGKILL to the shell. */
     public void finishIfRunning() {
-        if (isRunning()) {
+        if (isRunning() && mShellPid > 0) {
             try {
-                Os.kill(mShellPid, OsConstants.SIGKILL);
+                Os.kill(-mShellPid, OsConstants.SIGKILL);
             } catch (ErrnoException e) {
-                Logger.logWarn(mClient, LOG_TAG, "Failed sending SIGKILL: " + e.getMessage());
+                try {
+                    Os.kill(mShellPid, OsConstants.SIGKILL);
+                } catch (ErrnoException direct) {
+                    Logger.logWarn(mClient, LOG_TAG, "Failed sending SIGKILL: " + direct.getMessage());
+                }
             }
         }
     }
 
     /** Cleanup resources when the process exits. */
     void cleanupResources(int exitStatus) {
+        if (mShellPid > 0) {
+            try {
+                Os.kill(-mShellPid, OsConstants.SIGKILL);
+            } catch (ErrnoException ignored) {}
+        }
         synchronized (this) {
             mShellPid = -1;
             mShellExitStatus = exitStatus;
         }
 
-        // Stop the reader and writer threads, and close the I/O streams
+        // Stop the reader and writer threads, and close the I/O streams cleanly (fdsan-safe on Android 11+)
         mTerminalToProcessIOQueue.close();
         mProcessToTerminalIOQueue.close();
-        JNI.close(mTerminalFileDescriptor);
+        try {
+            if (mTerminalParcelFileDescriptor != null) {
+                mTerminalParcelFileDescriptor.close();
+            } else if (mTerminalFileDescriptor >= 0) {
+                JNI.close(mTerminalFileDescriptor);
+            }
+        } catch (IOException ignored) {}
+        mTerminalParcelFileDescriptor = null;
+        mTerminalFileDescriptor = -1;
     }
 
     @Override
@@ -313,27 +365,12 @@ public final class TerminalSession extends TerminalOutput {
         return null;
     }
 
-    private static FileDescriptor wrapFileDescriptor(int fileDescriptor, TerminalSessionClient client) {
-        FileDescriptor result = new FileDescriptor();
-        try {
-            Field descriptorField;
-            try {
-                descriptorField = FileDescriptor.class.getDeclaredField("descriptor");
-            } catch (NoSuchFieldException e) {
-                // For desktop java:
-                descriptorField = FileDescriptor.class.getDeclaredField("fd");
-            }
-            descriptorField.setAccessible(true);
-            descriptorField.set(result, fileDescriptor);
-        } catch (NoSuchFieldException | IllegalAccessException | IllegalArgumentException e) {
-            Logger.logStackTraceWithMessage(client, LOG_TAG, "Error accessing FileDescriptor#descriptor private field", e);
-            System.exit(1);
-        }
-        return result;
-    }
-
     @SuppressLint("HandlerLeak")
     class MainThreadHandler extends Handler {
+
+        MainThreadHandler(Looper looper) {
+            super(looper);
+        }
 
         final byte[] mReceiveBuffer = new byte[4 * 1024];
 

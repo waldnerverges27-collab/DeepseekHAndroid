@@ -82,7 +82,8 @@ class DshTerminalClient(
     override fun onSingleTapUp(e: MotionEvent?) {
         val view = attachedView ?: return
         view.requestFocus()
-        val imm = appContext.getSystemService(InputMethodManager::class.java)
+        val imm = view.context.getSystemService(InputMethodManager::class.java)
+            ?: appContext.getSystemService(InputMethodManager::class.java)
         imm?.showSoftInput(view, 0)
     }
 

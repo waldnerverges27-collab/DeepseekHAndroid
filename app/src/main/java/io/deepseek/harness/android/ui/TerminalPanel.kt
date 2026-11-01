@@ -269,8 +269,11 @@ fun TerminalPanel(
                             isFocusableInTouchMode = true
                             keepScreenOn = true
                             setTerminalViewClient(client)
-                            setTypeface(Typeface.MONOSPACE)
+                            // IMPORTANTE: setTextSize debe invocarse antes de setTypeface para
+                            // inicializar mRenderer (de lo contrario mRenderer es null).
                             setTextSize(fontPx)
+                            setTypeface(Typeface.MONOSPACE)
+                            setTerminalCursorBlinkerRate(500)
                             client.attachedView = this
                             attachSession(activeSession)
                             terminalViewRef = this
@@ -280,7 +283,9 @@ fun TerminalPanel(
                         val client = TerminalSessionRegistry.getOrCreateClient(view.context, onFontSizeScale)
                         client.attachedView = view
                         terminalViewRef = view
-                        view.setTextSize(fontPx)
+                        if (view.textSize != fontPx) {
+                            view.setTextSize(fontPx)
+                        }
                         if (view.currentSession !== activeSession) {
                             view.attachSession(activeSession)
                         }
