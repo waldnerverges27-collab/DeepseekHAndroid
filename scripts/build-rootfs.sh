@@ -114,8 +114,7 @@ chroot "$ROOTFS" /usr/bin/env -i \
   COREPACK_ENABLE_DOWNLOAD_PROMPT=0 LANG=C.UTF-8 \
   /bin/bash -c "
     /usr/local/bin/dsh-update-node '${NODE_VERSION}' &&
-    corepack enable --install-directory /usr/local/bin &&
-    corepack prepare pnpm@latest --activate
+    npm install -g pnpm corepack
   "
 
 BUNDLED_NODE="$(chroot "$ROOTFS" /usr/local/bin/node --version | tr -d '[:space:]')"

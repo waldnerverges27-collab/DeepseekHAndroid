@@ -111,7 +111,8 @@ tar -xJf "${WORK_DIR}/${TARBALL_NAME}" -C "$INSTALL_PREFIX" --strip-components=1
   --exclude='*/share/doc' \
   --exclude='*/share/man'
 
-# Habilitar corepack para disponer inmediatamente de pnpm y yarn además de npm/npx
+# En Node 25+/26+ corepack ya no viene pre-incluido por defecto en el tarball oficial;
+# si existe lo activamos, y conservamos pnpm/yarn instalados globalmente en /usr/local
 if [ -x "${INSTALL_PREFIX}/bin/corepack" ]; then
   "${INSTALL_PREFIX}/bin/corepack" enable --install-directory "${INSTALL_PREFIX}/bin" 2>/dev/null || true
 fi

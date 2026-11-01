@@ -42,8 +42,13 @@ jobs:
           DSH_VERSION: ${{ inputs.dsh_version || 'latest' }}
           NODE_VERSION: ${{ inputs.node_version || 'latest' }}
         run: |
+          set -o pipefail
           chmod +x scripts/*.sh
-          ./scripts/build-rootfs-docker.sh
+          if ! ./scripts/build-rootfs-docker.sh 2>&1 | tee /tmp/rootfs-build.log; then
+            TAIL_MSG="$(tail -n 35 /tmp/rootfs-build.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=RootfsBuildError::${TAIL_MSG}"
+            exit 1
+          fi
 
       - name: Subir artefacto rootfs.tar.xz
         uses: actions/upload-artifact@v4
@@ -104,9 +109,14 @@ jobs:
           RELEASE_KEY_ALIAS: release
           RELEASE_KEY_PASSWORD: android
         run: |
+          set -o pipefail
           chmod +x scripts/*.sh gradlew
           ./scripts/fetch-proot-binaries.sh
-          ./gradlew testDebugUnitTest assembleDebug assembleRelease
+          if ! ./gradlew testDebugUnitTest assembleDebug assembleRelease 2>&1 | tee /tmp/gradle-build.log; then
+            TAIL_MSG="$(tail -n 35 /tmp/gradle-build.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            echo "::error title=GradleBuildError::${TAIL_MSG}"
+            exit 1
+          fi
           mkdir -p dist-release
           cp app/build/outputs/apk/release/app-release.apk dist-release/DeepSeekHarness-Android-arm64-release.apk
           cp app/build/outputs/apk/debug/app-debug.apk dist-release/DeepSeekHarness-Android-arm64-debug.apk
@@ -129,29 +139,29 @@ jobs:
         run: |
           ROOTFS_STAMP="$(cat dist-release/rootfs.version)"
           TAG="v1.0.0-autonomous"
-          NOTES=$(cat <<EOF
-          ## DeepSeek Harness para Android — APK Autónomo Compilado
+          {
+            echo "## DeepSeek Harness para Android — APK Autónomo Compilado"
+            echo ""
+            echo "- **Rama compilada**: \`${GITHUB_REF_NAME}\` (\`${GITHUB_SHA::7}\`)"
+            echo "- **Sello del contenedor embebido**: \`${ROOTFS_STAMP}\`"
+            echo "- **Entorno embebido (100% offline tras el primer arranque, sin root ni Termux)**:"
+            echo "  - Debian 13 (Trixie, \`glibc 2.41\`) \`arm64\`"
+            echo "  - Última versión estable de **Node.js** + \`npm\`, \`npx\`, \`pnpm\`, \`corepack\`, cabeceras C/C++ y \`dsh-update-node\`"
+            echo "  - **\`@deepseek-ai/dsh\`** preinstalado y configurado"
+            echo "  - **PRoot** + \`libtalloc\` + \`libandroid-shmem\` + **Terminal PTY nativa (\`libtermux.so\`)**"
+            echo ""
+            echo "### Descarga directa para instalar en tu Android"
+            echo "- **\`DeepSeekHarness-Android-arm64-release.apk\`** *(Recomendado)*: APK firmado listo para instalar directamente en Android 8.0–15+ (\`arm64-v8a\`)."
+            echo "- **\`DeepSeekHarness-Android-arm64-debug.apk\`**: variante de depuración firmada."
+          } > /tmp/release-notes.md
 
-          - **Rama compilada**: \`${GITHUB_REF_NAME}\` (\`${GITHUB_SHA::7}\`)
-          - **Sello del contenedor embebido**: \`${ROOTFS_STAMP}\`
-          - **Contenido incluido dentro del APK (100% offline tras el primer arranque, sin root ni Termux)**:
-            - Debian 13 (Trixie, \`glibc 2.41\`) \`arm64\`
-            - Última versión estable de **Node.js** (\`npm\`, \`npx\`, \`pnpm\`, \`yarn\`, cabeceras C/C++ y \`dsh-update-node\`)
-            - **\`@deepseek-ai/dsh\`** preinstalado y configurado
-            - **PRoot** + \`libtalloc\` + \`libandroid-shmem\` + **Terminal PTY nativa (\`libtermux.so\`)**
-
-          ### Qué archivo descargar en tu Android
-          - **\`DeepSeekHarness-Android-arm64-release.apk\`** *(Recomendado)*: APK firmado listo para instalar directamente en Android 8.0–15+ (\`arm64-v8a\`).
-          - **\`DeepSeekHarness-Android-arm64-debug.apk\`**: variante con símbolos de depuración habilitados.
-          EOF
-          )
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist-release/* --clobber
-            gh release edit "$TAG" --title "DeepSeek Harness Android — APK Autónomo (Node.js Latest)" --notes "$NOTES" --latest
+            gh release edit "$TAG" --title "DeepSeek Harness Android — APK Autónomo (Node.js Latest)" --notes-file /tmp/release-notes.md --latest
           else
             gh release create "$TAG" dist-release/* \
               --target "$GITHUB_SHA" \
               --title "DeepSeek Harness Android — APK Autónomo (Node.js Latest)" \
-              --notes "$NOTES" \
+              --notes-file /tmp/release-notes.md \
               --latest
           fi

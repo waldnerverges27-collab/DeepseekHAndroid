@@ -51,8 +51,7 @@ RUN chmod 0755 /usr/local/bin/dsh-doctor /usr/local/bin/dsh-update-node \
       unzip \
       xz-utils \
     && /usr/local/bin/dsh-update-node "${NODE_VERSION}" \
-    && NODE_OPTIONS="--jitless" corepack enable --install-directory /usr/local/bin \
-    && NODE_OPTIONS="--jitless" corepack prepare pnpm@latest --activate \
+    && NODE_OPTIONS="--jitless" npm install -g pnpm corepack \
     && mkdir -p /opt/dsh \
     && cd /opt/dsh \
     && NODE_OPTIONS="--jitless" npm init -y >/dev/null \
